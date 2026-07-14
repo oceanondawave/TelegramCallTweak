@@ -1,7 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <objc/runtime.h>
 
-// --- Declaring interfaces to resolve forward declaration issues ---
+// --- Declaring interfaces to resolve compile warnings ---
 
 @interface PresentationCallImpl : NSObject
 - (BOOL)isScreencastActive;
@@ -45,12 +46,35 @@ static void setShareAudioOnlySetting(BOOL value) {
     [defaults synchronize];
 }
 
-// --- Hooks ---
+// --- Dynamic Swizzling Implementation (TrollStore / Sideload Friendly) ---
 
-%hook ManagedAudioSessionImpl
+static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
+    Method originalMethod = class_getInstanceMethod(class, originalSelector);
+    Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
+    
+    BOOL didAddMethod = class_addMethod(class,
+                                        originalSelector,
+                                        method_getImplementation(swizzledMethod),
+                                        method_getTypeEncoding(swizzledMethod));
+    
+    if (didAddMethod) {
+        class_replaceMethod(class,
+                            swizzledSelector,
+                            method_getImplementation(originalMethod),
+                            method_getTypeEncoding(originalMethod));
+    } else {
+        method_exchangeImplementations(originalMethod, swizzledMethod);
+    }
+}
 
-- (void)updateAudioSessionType:(NSInteger)type outputMode:(NSInteger)outputMode {
-    %orig;
+// --- Swizzled Methods ---
+
+// 1. ManagedAudioSessionImpl Hook
+@interface NSObject (ManagedAudioSessionImplHook)
+@end
+@implementation NSObject (ManagedAudioSessionImplHook)
+- (void)swizzled_updateAudioSessionType:(NSInteger)type outputMode:(NSInteger)outputMode {
+    [self swizzled_updateAudioSessionType:type outputMode:outputMode];
     if (getForceBuiltInMicSetting()) {
         NSArray<AVAudioSessionPortDescription *> *inputs = [[AVAudioSession sharedInstance] availableInputs];
         AVAudioSessionPortDescription *builtInMic = nil;
@@ -66,43 +90,40 @@ static void setShareAudioOnlySetting(BOOL value) {
         }
     }
 }
+@end
 
-%end
-
-%hook PresentationCallImpl
-
-- (BOOL)isScreencastActive {
-    return %orig;
-}
-
-- (void)videoButtonPressed {
-    if ([self isScreencastActive]) {
-        [self disableScreencast];
+// 2. PresentationCallImpl Hooks
+@interface NSObject (PresentationCallImplHook)
+@end
+@implementation NSObject (PresentationCallImplHook)
+- (void)swizzled_videoButtonPressed {
+    PresentationCallImpl *call = (PresentationCallImpl *)self;
+    if ([call isScreencastActive]) {
+        [call disableScreencast];
     } else {
-        %orig;
+        [self swizzled_videoButtonPressed];
     }
 }
 
-- (void)handleScreencastFrame:(id)frame buffer:(CVPixelBufferRef)pixelBuffer {
+- (void)swizzled_handleScreencastFrame:(id)frame buffer:(CVPixelBufferRef)pixelBuffer {
     if (getShareAudioOnlySetting()) {
-        // Skip frame processing to enforce audio-only sharing
         return;
     }
-    %orig;
+    [self swizzled_handleScreencastFrame:frame buffer:pixelBuffer];
 }
+@end
 
-%end
-
-%hook VoiceChatCameraPreviewControllerNode
-
-- (void)setupWheelNode {
-    %orig;
-    // Intercept wheelNode tab items and insert "Share Audio Only"
+// 3. VoiceChatCameraPreviewControllerNode Hooks
+@interface NSObject (VoiceChatCameraPreviewControllerNodeHook)
+@end
+@implementation NSObject (VoiceChatCameraPreviewControllerNodeHook)
+- (void)swizzled_setupWheelNode {
+    [self swizzled_setupWheelNode];
+    
     id wheelNode = [self valueForKey:@"wheelNode"];
     if (wheelNode) {
         NSMutableArray *items = [[wheelNode valueForKey:@"items"] mutableCopy];
         
-        // Dynamically instantiate the item and initialize without ARC compiler warnings
         WheelControlNodeItem *audioTab = [NSClassFromString(@"WheelControlNodeItem") alloc];
         if ([audioTab respondsToSelector:@selector(initWithTitle:)]) {
             audioTab = [audioTab initWithTitle:@"Share Audio Only"];
@@ -115,19 +136,35 @@ static void setShareAudioOnlySetting(BOOL value) {
     }
 }
 
-- (void)wheelNodeSelectedIndexChanged:(NSInteger)index {
-    %orig;
+- (void)swizzled_wheelNodeSelectedIndexChanged:(NSInteger)index {
+    [self swizzled_wheelNodeSelectedIndexChanged:index];
     setShareAudioOnlySetting(index == 0);
 }
+@end
 
-%end
-
-%hook PrivateCallScreen
-
-- (id)buttonLayoutForParams:(id)params {
-    id layout = %orig;
-    // Replace video button with screen share button style dynamically
-    return layout;
+// --- Tweak Entry Point ---
+__attribute__((constructor)) static void initTweak() {
+    NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
+    
+    // Hook ManagedAudioSessionImpl
+    Class managedAudioSession = NSClassFromString(@"ManagedAudioSessionImpl");
+    if (managedAudioSession) {
+        swizzle(managedAudioSession, @selector(updateAudioSessionType:outputMode:), @selector(swizzled_updateAudioSessionType:outputMode:));
+    }
+    
+    // Hook PresentationCallImpl
+    Class presentationCall = NSClassFromString(@"PresentationCallImpl");
+    if (presentationCall) {
+        swizzle(presentationCall, @selector(videoButtonPressed), @selector(swizzled_videoButtonPressed));
+        swizzle(presentationCall, @selector(handleScreencastFrame:buffer:), @selector(swizzled_handleScreencastFrame:buffer:));
+    }
+    
+    // Hook VoiceChatCameraPreviewControllerNode
+    Class cameraPreviewNode = NSClassFromString(@"VoiceChatCameraPreviewControllerNode");
+    if (cameraPreviewNode) {
+        swizzle(cameraPreviewNode, @selector(setupWheelNode), @selector(swizzled_setupWheelNode));
+        swizzle(cameraPreviewNode, @selector(wheelNodeSelectedIndexChanged:), @selector(swizzled_wheelNodeSelectedIndexChanged:));
+    }
+    
+    NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
 }
-
-%end
