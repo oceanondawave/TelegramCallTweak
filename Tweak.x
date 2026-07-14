@@ -34,12 +34,18 @@ static void setShareAudioOnlySetting(BOOL value) {
     [defaults synchronize];
 }
 
-// --- Helper input routing enforcer ---
+// --- Dynamic Route Enforcer (Strict Event-driven) ---
 
 static void enforceBuiltInMicInput(AVAudioSession *session) {
-    // Only override input if we are in an active call, to avoid breaking the outgoing ringing state
-    if (session.categoryOptions & AVAudioSessionCategoryOptionAllowBluetooth) {
-        NSLog(@"[TelegramCallTweak] Standard Bluetooth is allowed. Skipping immediate mic override to prevent mute.");
+    if (!getForceBuiltInMicSetting()) {
+        return;
+    }
+    
+    // Safety check: Only override if the current active route actually has an active input stream populated.
+    // This prevents splitting the route during early dialing/ringing states which causes call mute.
+    AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
+    if (currentRoute.inputs.count == 0) {
+        NSLog(@"[TelegramCallTweak] Active inputs are empty. Audio session is in playback-only state (ringing/dialing). Skipping override.");
         return;
     }
     
@@ -50,10 +56,23 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
             break;
         }
     }
+    
     if (builtInMic) {
-        NSError *err = nil;
-        [session setPreferredInput:builtInMic error:&err];
-        NSLog(@"[TelegramCallTweak] Enforced Built-in Mic input. Status: %@", err ? err.localizedDescription : @"Success");
+        BOOL isAlreadyMic = NO;
+        for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
+            if ([input.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                isAlreadyMic = YES;
+                break;
+            }
+        }
+        
+        if (!isAlreadyMic) {
+            NSError *error = nil;
+            BOOL success = [session setPreferredInput:builtInMic error:&error];
+            NSLog(@"[TelegramCallTweak] Safe event-driven override. Forced input to Built-in Mic: %d (Error: %@)", success, error);
+        } else {
+            NSLog(@"[TelegramCallTweak] Built-in Mic is already the active input.");
+        }
     }
 }
 
@@ -68,15 +87,13 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        // Force options to EXACTLY A2DP (32) + DefaultToSpeaker (1) = 33
+        // Force A2DP + Speaker, strip HFP (Bluetooth standard category 4)
         AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
         
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat layout to allow route splitting
+            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat mode to enable route splitting
         }
-        
-        NSLog(@"[TelegramCallTweak] Modified parameters: Mode=%@, Options=%lu", modifiedMode, (unsigned long)modifiedOptions);
         
         BOOL success = [self swizzled_setCategory:category mode:modifiedMode options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
@@ -89,11 +106,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:withOptions: Category=%@, Options=%lu", category, (unsigned long)options);
         
-        // Force options to EXACTLY 33
         AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
-        
-        NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
-        
         BOOL success = [self swizzled_setCategory:category withOptions:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
         return success;
@@ -117,7 +130,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 @end
 
-// --- Route Change Notification observer ---
+// --- Route Change Notification Observer ---
 @interface TweakAudioObserver : NSObject
 @end
 @implementation TweakAudioObserver
@@ -133,21 +146,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 }
 - (void)audioRouteChanged:(NSNotification *)notification {
     if (getForceBuiltInMicSetting()) {
-        // Delayed enforcement to allow the outgoing ringing sequence to negotiate connection before forcing mic input
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            AVAudioSession *session = [AVAudioSession sharedInstance];
-            AVAudioSessionPortDescription *builtInMic = nil;
-            for (AVAudioSessionPortDescription *port in session.availableInputs) {
-                if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
-                    builtInMic = port;
-                    break;
-                }
-            }
-            if (builtInMic) {
-                [session setPreferredInput:builtInMic error:nil];
-                NSLog(@"[TelegramCallTweak] Route change detected. Delayed Built-in Mic input enforced.");
-            }
-        });
+        enforceBuiltInMicInput([AVAudioSession sharedInstance]);
     }
 }
 @end
