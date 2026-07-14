@@ -37,6 +37,12 @@ static void setShareAudioOnlySetting(BOOL value) {
 // --- Helper input routing enforcer ---
 
 static void enforceBuiltInMicInput(AVAudioSession *session) {
+    // Only override input if we are in an active call, to avoid breaking the outgoing ringing state
+    if (session.categoryOptions & AVAudioSessionCategoryOptionAllowBluetooth) {
+        NSLog(@"[TelegramCallTweak] Standard Bluetooth is allowed. Skipping immediate mic override to prevent mute.");
+        return;
+    }
+    
     AVAudioSessionPortDescription *builtInMic = nil;
     for (AVAudioSessionPortDescription *port in session.availableInputs) {
         if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
@@ -62,11 +68,8 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        // Strip AVAudioSessionCategoryOptionAllowBluetooth (value 4) to prevent HFP session from taking over
-        AVAudioSessionCategoryOptions modifiedOptions = options;
-        modifiedOptions &= ~AVAudioSessionCategoryOptionAllowBluetooth; // Remove HFP
-        modifiedOptions |= AVAudioSessionCategoryOptionAllowBluetoothA2DP; // Force high-quality media output
-        modifiedOptions |= AVAudioSessionCategoryOptionDefaultToSpeaker;
+        // Force options to EXACTLY A2DP (32) + DefaultToSpeaker (1) = 33
+        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
         
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
@@ -86,11 +89,8 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:withOptions: Category=%@, Options=%lu", category, (unsigned long)options);
         
-        // Strip AVAudioSessionCategoryOptionAllowBluetooth (value 4)
-        AVAudioSessionCategoryOptions modifiedOptions = options;
-        modifiedOptions &= ~AVAudioSessionCategoryOptionAllowBluetooth;
-        modifiedOptions |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-        modifiedOptions |= AVAudioSessionCategoryOptionDefaultToSpeaker;
+        // Force options to EXACTLY 33
+        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
         
         NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
         
@@ -117,7 +117,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 @end
 
-// --- Route Change Notification observer (as backup) ---
+// --- Route Change Notification observer ---
 @interface TweakAudioObserver : NSObject
 @end
 @implementation TweakAudioObserver
@@ -133,8 +133,20 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 }
 - (void)audioRouteChanged:(NSNotification *)notification {
     if (getForceBuiltInMicSetting()) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            enforceBuiltInMicInput([AVAudioSession sharedInstance]);
+        // Delayed enforcement to allow the outgoing ringing sequence to negotiate connection before forcing mic input
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            AVAudioSession *session = [AVAudioSession sharedInstance];
+            AVAudioSessionPortDescription *builtInMic = nil;
+            for (AVAudioSessionPortDescription *port in session.availableInputs) {
+                if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                    builtInMic = port;
+                    break;
+                }
+            }
+            if (builtInMic) {
+                [session setPreferredInput:builtInMic error:nil];
+                NSLog(@"[TelegramCallTweak] Route change detected. Delayed Built-in Mic input enforced.");
+            }
         });
     }
 }
