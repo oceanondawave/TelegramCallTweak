@@ -135,7 +135,8 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
             modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
         }
         
-        // Force Category Options to A2DP-only (32) right before applying the mode change
+        // CRITICAL: Call the swizzled selector name to trigger the ORIGINAL, un-swizzled category method.
+        // Calling setCategory:options:error: directly causes infinite recursion and crashes the app.
         NSError *categoryError = nil;
         [self swizzled_setCategory:self.category options:AVAudioSessionCategoryOptionAllowBluetoothA2DP error:&categoryError];
         if (categoryError) {
