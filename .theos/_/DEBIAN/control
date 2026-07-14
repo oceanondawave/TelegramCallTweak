@@ -1,9 +1,0 @@
-Package: com.yourcompany.telegramcalltweak
-Name: TelegramCallTweak
-Depends: mobilesubstrate
-Description: Custom call enhancements (Screen sharing & Microphone routing)
-Author: minhocean
-Section: Tweaks
-Architecture: iphoneos-arm
-Version: 1.0.0-2+debug
-Installed-Size: 172
