@@ -41,7 +41,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         return;
     }
     
-    // Safety check: Only override if the current active route actually has an active input stream populated.
     AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
     if (currentRoute.inputs.count == 0) {
         NSLog(@"[TelegramCallTweak] Active inputs are empty. Audio session is in playback-only state (ringing/dialing). Skipping override.");
@@ -87,8 +86,8 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 - (AVAudioSessionCategoryOptions)swizzled_categoryOptions {
     AVAudioSessionCategoryOptions realOptions = [self swizzled_categoryOptions];
     if (getForceBuiltInMicSetting()) {
-        // If we internally configured 33, trick the caller into thinking it is 37 (HFP + A2DP + Speaker)
-        if (realOptions == (AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker)) {
+        // If we internally configured 32, trick the caller into thinking it is 37 (HFP + A2DP + Speaker)
+        if (realOptions == AVAudioSessionCategoryOptionAllowBluetoothA2DP) {
             return (AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker);
         }
     }
@@ -99,8 +98,8 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        // Force A2DP + Speaker, strip HFP (Bluetooth category option 4)
-        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
+        // Force EXACTLY AllowBluetoothA2DP (32) and strip DefaultToSpeaker (1) & HFP (4)
+        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
         
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
@@ -114,12 +113,11 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     return [self swizzled_setCategory:category mode:mode options:options error:outError];
 }
 
-// Hooking correct Apple selector setCategory:options:error: instead of setCategory:withOptions:error:
 - (BOOL)swizzled_setCategory:(AVAudioSessionCategory)category options:(AVAudioSessionCategoryOptions)options error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:options: Category=%@, Options=%lu", category, (unsigned long)options);
         
-        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
+        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
         
         NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
         
