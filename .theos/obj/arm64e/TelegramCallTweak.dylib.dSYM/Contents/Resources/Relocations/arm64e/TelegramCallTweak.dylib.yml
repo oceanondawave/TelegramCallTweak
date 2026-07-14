@@ -1,0 +1,27 @@
+---
+triple:          'arm64e-apple-darwin'
+binary-path:     '/Volumes/DATA/CAREER/Projects/TelegramCallTweak/.theos/obj/arm64e/TelegramCallTweak.dylib'
+relocations:
+  - { offset: 0x1E, size: 0x8, addend: 0x0, symName: __logosLocalInit, symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x168 }
+  - { offset: 0x45, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$ManagedAudioSessionImpl$updateAudioSessionType$outputMode$', symObjAddr: 0x1EE0, symBinAddr: 0xC070, symSize: 0x0 }
+  - { offset: 0xAA, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$PresentationCallImpl$isScreencastActive', symObjAddr: 0x1EE8, symBinAddr: 0xC078, symSize: 0x0 }
+  - { offset: 0x12A, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$PresentationCallImpl$videoButtonPressed', symObjAddr: 0x1EF0, symBinAddr: 0xC080, symSize: 0x0 }
+  - { offset: 0x150, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$PresentationCallImpl$handleScreencastFrame$buffer$', symObjAddr: 0x1EF8, symBinAddr: 0xC088, symSize: 0x0 }
+  - { offset: 0x1CB, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$VoiceChatCameraPreviewControllerNode$setupWheelNode', symObjAddr: 0x1F00, symBinAddr: 0xC090, symSize: 0x0 }
+  - { offset: 0x20B, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$VoiceChatCameraPreviewControllerNode$wheelNodeSelectedIndexChanged$', symObjAddr: 0x1F08, symBinAddr: 0xC098, symSize: 0x0 }
+  - { offset: 0x236, size: 0x8, addend: 0x0, symName: '__logos_orig$_ungrouped$PrivateCallScreen$buttonLayoutForParams$', symObjAddr: 0x1F10, symBinAddr: 0xC0A0, symSize: 0x0 }
+  - { offset: 0x281, size: 0x8, addend: 0x0, symName: _gShareAudioOnly, symObjAddr: 0x1F18, symBinAddr: 0xC0A8, symSize: 0x0 }
+  - { offset: 0x2A0, size: 0x8, addend: 0x0, symName: __logosLocalInit, symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x168 }
+  - { offset: 0x39A, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$ManagedAudioSessionImpl$updateAudioSessionType$outputMode$', symObjAddr: 0x168, symBinAddr: 0x4168, symSize: 0xC }
+  - { offset: 0x3DC, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$ManagedAudioSessionImpl$updateAudioSessionType$outputMode$', symObjAddr: 0x168, symBinAddr: 0x4168, symSize: 0xC }
+  - { offset: 0x427, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$isScreencastActive', symObjAddr: 0x174, symBinAddr: 0x4174, symSize: 0xC }
+  - { offset: 0x44E, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$isScreencastActive', symObjAddr: 0x174, symBinAddr: 0x4174, symSize: 0xC }
+  - { offset: 0x483, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$videoButtonPressed', symObjAddr: 0x180, symBinAddr: 0x4180, symSize: 0x6C }
+  - { offset: 0x49C, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$videoButtonPressed', symObjAddr: 0x180, symBinAddr: 0x4180, symSize: 0x6C }
+  - { offset: 0x4D1, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$handleScreencastFrame$buffer$', symObjAddr: 0x1EC, symBinAddr: 0x41EC, symSize: 0x1C }
+  - { offset: 0x4DB, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PresentationCallImpl$handleScreencastFrame$buffer$', symObjAddr: 0x1EC, symBinAddr: 0x41EC, symSize: 0x1C }
+  - { offset: 0x526, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$VoiceChatCameraPreviewControllerNode$setupWheelNode', symObjAddr: 0x208, symBinAddr: 0x4208, symSize: 0x104 }
+  - { offset: 0x530, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$VoiceChatCameraPreviewControllerNode$setupWheelNode', symObjAddr: 0x208, symBinAddr: 0x4208, symSize: 0x104 }
+  - { offset: 0x60C, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$VoiceChatCameraPreviewControllerNode$wheelNodeSelectedIndexChanged$', symObjAddr: 0x30C, symBinAddr: 0x430C, symSize: 0x3C }
+  - { offset: 0x670, size: 0x8, addend: 0x0, symName: '__logos_method$_ungrouped$PrivateCallScreen$buttonLayoutForParams$', symObjAddr: 0x348, symBinAddr: 0x4348, symSize: 0xC }
+...
