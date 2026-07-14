@@ -47,7 +47,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (builtInMic) {
         NSError *err = nil;
         [session setPreferredInput:builtInMic error:&err];
-        NSLog(@"[TelegramCallTweak] Intercepted category/mode change. Enforced Built-in Mic input: %@", err ? err.localizedDescription : @"Success");
+        NSLog(@"[TelegramCallTweak] Enforced Built-in Mic input. Status: %@", err ? err.localizedDescription : @"Success");
     }
 }
 
@@ -62,16 +62,18 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        // Force output to A2DP and bypass HFP by overriding mode to Default/VideoChat and injecting A2DP category option
+        // Strip AVAudioSessionCategoryOptionAllowBluetooth (value 4) to prevent HFP session from taking over
         AVAudioSessionCategoryOptions modifiedOptions = options;
-        modifiedOptions |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-        modifiedOptions |= AVAudioSessionCategoryOptionDefaultToSpeaker;
         modifiedOptions &= ~AVAudioSessionCategoryOptionAllowBluetooth; // Remove HFP
+        modifiedOptions |= AVAudioSessionCategoryOptionAllowBluetoothA2DP; // Force high-quality media output
+        modifiedOptions |= AVAudioSessionCategoryOptionDefaultToSpeaker;
         
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat; // VideoChat allows splitting routing, VoiceChat does not
+            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat layout to allow route splitting
         }
+        
+        NSLog(@"[TelegramCallTweak] Modified parameters: Mode=%@, Options=%lu", modifiedMode, (unsigned long)modifiedOptions);
         
         BOOL success = [self swizzled_setCategory:category mode:modifiedMode options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
@@ -83,10 +85,14 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 - (BOOL)swizzled_setCategory:(AVAudioSessionCategory)category withOptions:(AVAudioSessionCategoryOptions)options error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:withOptions: Category=%@, Options=%lu", category, (unsigned long)options);
+        
+        // Strip AVAudioSessionCategoryOptionAllowBluetooth (value 4)
         AVAudioSessionCategoryOptions modifiedOptions = options;
+        modifiedOptions &= ~AVAudioSessionCategoryOptionAllowBluetooth;
         modifiedOptions |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
         modifiedOptions |= AVAudioSessionCategoryOptionDefaultToSpeaker;
-        modifiedOptions &= ~AVAudioSessionCategoryOptionAllowBluetooth;
+        
+        NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
         
         BOOL success = [self swizzled_setCategory:category withOptions:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
