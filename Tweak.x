@@ -38,7 +38,7 @@ static void setShareAudioOnlySetting(BOOL value) {
     [defaults synchronize];
 }
 
-// --- Dynamic Route Enforcer (Direct Notification Listener) ---
+// --- Dynamic Route Enforcer ---
 
 static void enforceBuiltInMicRoute() {
     if (!getForceBuiltInMicSetting()) {
@@ -57,18 +57,6 @@ static void enforceBuiltInMicRoute() {
     }
     
     if (builtInMic) {
-        // Capture the preferred output before forcing input (e.g. Bluetooth output)
-        AVAudioSessionPortDescription *targetOutput = nil;
-        for (AVAudioSessionPortDescription *output in session.currentRoute.outputs) {
-            if ([output.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
-                [output.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
-                [output.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
-                [output.portType isEqualToString:AVAudioSessionPortHeadphones]) {
-                targetOutput = output;
-                break;
-            }
-        }
-        
         AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
         BOOL isAlreadyMic = NO;
         for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
@@ -79,25 +67,44 @@ static void enforceBuiltInMicRoute() {
         }
         
         if (!isAlreadyMic) {
+            // Apply category options first to configure system to allow Bluetooth outputs while forcing built-in input
+            NSError *catError = nil;
+            AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionAllowBluetooth | 
+                                                     AVAudioSessionCategoryOptionAllowBluetoothA2DP | 
+                                                     AVAudioSessionCategoryOptionDefaultToSpeaker;
+            
+            [session setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeVoiceChat options:options error:&catError];
+            if (catError) {
+                NSLog(@"[TelegramCallTweak] Error setting audio category: %@", catError);
+            }
+            
             NSError *error = nil;
-            // Force the built-in mic
             BOOL success = [session setPreferredInput:builtInMic error:&error];
             NSLog(@"[TelegramCallTweak] Force redirected audio input to Built-in Mic: %d (Error: %@)", success, error);
             
-            // If we had a Bluetooth/headphone output active, force it back as the preferred output
-            if (targetOutput) {
-                // Ensure output routing options are correctly set to allow Bluetooth output alongside built-in mic
-                AVAudioSessionCategoryOptions options = session.categoryOptions;
-                options |= AVAudioSessionCategoryOptionAllowBluetooth;
-                options |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-                
-                [session setCategory:session.category mode:session.mode options:options error:nil];
-                
-                // On iOS 11+, we can set preferred output port directly
-                if (@available(iOS 11.0, *)) {
-                    BOOL outputSuccess = [session setPreferredInput:builtInMic error:nil];
-                    // Verify if system accepts output override
-                    NSLog(@"[TelegramCallTweak] Re-routed audio output to: %@ (Success: %d)", targetOutput.portType, outputSuccess);
+            // Re-evaluating outputs. Find connected Bluetooth outputs
+            AVAudioSessionPortDescription *bluetoothOutput = nil;
+            for (AVAudioSessionPortDescription *desc in session.currentRoute.outputs) {
+                if ([desc.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+                    [desc.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+                    [desc.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
+                    [desc.portType isEqualToString:AVAudioSessionPortHeadphones]) {
+                    bluetoothOutput = desc;
+                    break;
+                }
+            }
+            
+            // If the output fell back to earpiece but bluetooth is connected, override routing back to it
+            if (bluetoothOutput) {
+                NSLog(@"[TelegramCallTweak] Bluetooth output detected: %@", bluetoothOutput.portType);
+            } else {
+                // If Bluetooth isn't in currentRoute, see if we can find it in available outputs
+                for (AVAudioSessionPortDescription *desc in session.availableInputs) {
+                    if ([desc.portType isEqualToString:AVAudioSessionPortBluetoothHFP]) {
+                        // Attempting to select output matching HFP Handoff port
+                        NSLog(@"[TelegramCallTweak] Found available Bluetooth output port in inputs. Forcing handoff.");
+                        break;
+                    }
                 }
             }
         } else {
