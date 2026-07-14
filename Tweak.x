@@ -142,9 +142,40 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 }
 @end
 
+// 4. Hook AppDelegate to show launch confirmation toast
+@interface NSObject (AppDelegateHook)
+@end
+@implementation NSObject (AppDelegateHook)
+- (BOOL)swizzled_application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    BOOL result = [self swizzled_application:application didFinishLaunchingWithOptions:launchOptions];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
+        if (!rootVC) {
+            rootVC = [[application keyWindow] rootViewController];
+        }
+        if (rootVC) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
+                                                                           message:@"TelegramCallTweak has loaded successfully!"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [rootVC presentViewController:alert animated:YES completion:nil];
+        }
+    });
+    
+    return result;
+}
+@end
+
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
+    
+    // Hook AppDelegate didFinishLaunching
+    Class appDelegateClass = NSClassFromString(@"AppDelegate");
+    if (appDelegateClass) {
+        swizzle(appDelegateClass, @selector(application:didFinishLaunchingWithOptions:), @selector(swizzled_application:didFinishLaunchingWithOptions:));
+    }
     
     // Hook ManagedAudioSessionImpl
     Class managedAudioSession = NSClassFromString(@"ManagedAudioSessionImpl");
