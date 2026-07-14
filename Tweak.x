@@ -52,6 +52,11 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     Method originalMethod = class_getInstanceMethod(class, originalSelector);
     Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
     
+    if (!originalMethod || !swizzledMethod) {
+        NSLog(@"[TelegramCallTweak] Error: could not find methods to swizzle for class %@", NSStringFromClass(class));
+        return;
+    }
+    
     BOOL didAddMethod = class_addMethod(class,
                                         originalSelector,
                                         method_getImplementation(swizzledMethod),
@@ -175,24 +180,33 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Hook ManagedAudioSessionImpl
-    Class managedAudioSession = NSClassFromString(@"ManagedAudioSessionImpl");
+    // Hook ManagedAudioSessionImpl using its mangled Swift name: _TtC13TelegramAudio23ManagedAudioSessionImpl
+    Class managedAudioSession = NSClassFromString(@"_TtC13TelegramAudio23ManagedAudioSessionImpl");
     if (managedAudioSession) {
+        NSLog(@"[TelegramCallTweak] Hooking ManagedAudioSessionImpl...");
         swizzle(managedAudioSession, @selector(updateAudioSessionType:outputMode:), @selector(swizzled_updateAudioSessionType:outputMode:));
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: ManagedAudioSessionImpl not found");
     }
     
-    // Hook PresentationCallImpl
-    Class presentationCall = NSClassFromString(@"PresentationCallImpl");
+    // Hook PresentationCallImpl using its mangled Swift name: _TtC15TelegramCallsUI20PresentationCallImpl
+    Class presentationCall = NSClassFromString(@"_TtC15TelegramCallsUI20PresentationCallImpl");
     if (presentationCall) {
+        NSLog(@"[TelegramCallTweak] Hooking PresentationCallImpl...");
         swizzle(presentationCall, @selector(videoButtonPressed), @selector(swizzled_videoButtonPressed));
         swizzle(presentationCall, @selector(handleScreencastFrame:buffer:), @selector(swizzled_handleScreencastFrame:buffer:));
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: PresentationCallImpl not found");
     }
     
-    // Hook VoiceChatCameraPreviewControllerNode
-    Class cameraPreviewNode = NSClassFromString(@"VoiceChatCameraPreviewControllerNode");
+    // Hook VoiceChatCameraPreviewControllerNode using its mangled Swift name: _TtC15TelegramCallsUI36VoiceChatCameraPreviewControllerNode
+    Class cameraPreviewNode = NSClassFromString(@"_TtC15TelegramCallsUI36VoiceChatCameraPreviewControllerNode");
     if (cameraPreviewNode) {
+        NSLog(@"[TelegramCallTweak] Hooking VoiceChatCameraPreviewControllerNode...");
         swizzle(cameraPreviewNode, @selector(setupWheelNode), @selector(swizzled_setupWheelNode));
         swizzle(cameraPreviewNode, @selector(wheelNodeSelectedIndexChanged:), @selector(swizzled_wheelNodeSelectedIndexChanged:));
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: VoiceChatCameraPreviewControllerNode not found");
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
