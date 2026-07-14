@@ -41,7 +41,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         return;
     }
     
-    // Safety check: Only override if the current active route actually has an active input stream populated.
     AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
     if (currentRoute.inputs.count == 0) {
         NSLog(@"[TelegramCallTweak] Active inputs are empty. Audio session is in playback-only state (ringing/dialing). Skipping override.");
@@ -135,12 +134,19 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
             modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
         }
         
-        // CRITICAL: Call the swizzled selector name to trigger the ORIGINAL, un-swizzled category method.
-        // Calling setCategory:options:error: directly causes infinite recursion and crashes the app.
-        NSError *categoryError = nil;
-        [self swizzled_setCategory:self.category options:AVAudioSessionCategoryOptionAllowBluetoothA2DP error:&categoryError];
-        if (categoryError) {
-            NSLog(@"[TelegramCallTweak] Error updating category options inside setMode: %@", categoryError.localizedDescription);
+        // BYPASS OBJECTIVE-C DISPATCH: Grab the direct function pointer of swizzled_setCategory:options:error:
+        // (which represents the original AVAudioSession implementation) to avoid infinite recursion stack overflows.
+        SEL selector = @selector(swizzled_setCategory:options:error:);
+        Method originalMethod = class_getInstanceMethod([AVAudioSession class], selector);
+        if (originalMethod) {
+            typedef BOOL (*OriginalSetCategoryType)(id, SEL, AVAudioSessionCategory, AVAudioSessionCategoryOptions, NSError **);
+            OriginalSetCategoryType imp = (OriginalSetCategoryType)method_getImplementation(originalMethod);
+            
+            NSError *categoryError = nil;
+            imp(self, selector, self.category, AVAudioSessionCategoryOptionAllowBluetoothA2DP, &categoryError);
+            if (categoryError) {
+                NSLog(@"[TelegramCallTweak] Error setting category inside setMode: %@", categoryError.localizedDescription);
+            }
         }
         
         BOOL success = [self swizzled_setMode:modifiedMode error:outError];
