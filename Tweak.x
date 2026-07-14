@@ -142,42 +142,26 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 }
 @end
 
-// 4. Hook UIApplication to show launch confirmation toast
-@interface NSObject (UIApplicationHook)
+// 4. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
+@interface UIWindow (TweakHook)
 @end
-@implementation NSObject (UIApplicationHook)
-- (instancetype)swizzled_init {
-    id instance = [self swizzled_init];
+@implementation UIWindow (TweakHook)
+- (void)swizzled_makeKeyAndVisible {
+    [self swizzled_makeKeyAndVisible];
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *window = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive) {
-                    for (UIWindow *w in scene.windows) {
-                        if (w.isKeyWindow) {
-                            window = w;
-                            break;
-                        }
-                    }
-                }
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIViewController *rootVC = self.rootViewController;
+            if (rootVC) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
+                                                                               message:@"TelegramCallTweak has loaded successfully!"
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [rootVC presentViewController:alert animated:YES completion:nil];
             }
-        }
-        if (!window) {
-            window = [UIApplication sharedApplication].keyWindow;
-        }
-        
-        UIViewController *rootVC = window.rootViewController;
-        if (rootVC) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
-                                                                           message:@"TelegramCallTweak has loaded successfully!"
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [rootVC presentViewController:alert animated:YES completion:nil];
-        }
+        });
     });
-    
-    return instance;
 }
 @end
 
@@ -185,10 +169,10 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
     
-    // Hook UIApplication init
-    Class uiAppClass = NSClassFromString(@"UIApplication");
-    if (uiAppClass) {
-        swizzle(uiAppClass, @selector(init), @selector(swizzled_init));
+    // Hook UIWindow makeKeyAndVisible
+    Class uiWindowClass = NSClassFromString(@"UIWindow");
+    if (uiWindowClass) {
+        swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
     // Hook ManagedAudioSessionImpl
