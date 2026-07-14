@@ -125,6 +125,24 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     return [self swizzled_setCategory:category options:options error:outError];
 }
 
+- (BOOL)swizzled_setMode:(AVAudioSessionMode)mode error:(NSError **)outError {
+    if (getForceBuiltInMicSetting()) {
+        NSLog(@"[TelegramCallTweak] Intercepted setMode: Mode=%@", mode);
+        
+        AVAudioSessionMode modifiedMode = mode;
+        if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
+            modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
+        }
+        
+        // Safety: We ONLY change the mode parameter passed to Apple. 
+        // We do NOT call setCategory inside here. This guarantees zero recursion and zero crashes.
+        BOOL success = [self swizzled_setMode:modifiedMode error:outError];
+        enforceBuiltInMicInput(self);
+        return success;
+    }
+    return [self swizzled_setMode:mode error:outError];
+}
+
 @end
 
 // --- Route Change Notification Observer ---
@@ -246,11 +264,12 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Hook AVAudioSession setCategory methods directly (setMode is removed to prevent stack recursion crashes)
+    // Hook AVAudioSession configuration methods
     Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
     if (avAudioSessionClass) {
         swizzle(avAudioSessionClass, @selector(setCategory:mode:options:error:), @selector(swizzled_setCategory:mode:options:error:));
         swizzle(avAudioSessionClass, @selector(setCategory:options:error:), @selector(swizzled_setCategory:options:error:));
+        swizzle(avAudioSessionClass, @selector(setMode:error:), @selector(swizzled_setMode:error:));
         swizzle(avAudioSessionClass, @selector(categoryOptions), @selector(swizzled_categoryOptions));
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category and mode switches successfully.");
     }
