@@ -87,7 +87,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 - (AVAudioSessionCategoryOptions)swizzled_categoryOptions {
     AVAudioSessionCategoryOptions realOptions = [self swizzled_categoryOptions];
     if (getForceBuiltInMicSetting()) {
-        // If we internally configured 32 (A2DP only), trick Telegram's checks into thinking it is 37 (HFP + A2DP + Speaker)
+        // If we internally configured 32, trick Telegram's checks into thinking it is 37 (HFP + A2DP + Speaker)
         if (realOptions == AVAudioSessionCategoryOptionAllowBluetoothA2DP) {
             return (AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker);
         }
@@ -119,9 +119,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:options: Category=%@, Options=%lu", category, (unsigned long)options);
         
         AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-        
-        NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
-        
         BOOL success = [self swizzled_setCategory:category options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
         return success;
@@ -132,10 +129,19 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 - (BOOL)swizzled_setMode:(AVAudioSessionMode)mode error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setMode: Mode=%@", mode);
+        
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat;
+            modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
         }
+        
+        // Force Category Options to A2DP-only (32) right before applying the mode change
+        NSError *categoryError = nil;
+        [self swizzled_setCategory:self.category options:AVAudioSessionCategoryOptionAllowBluetoothA2DP error:&categoryError];
+        if (categoryError) {
+            NSLog(@"[TelegramCallTweak] Error updating category options inside setMode: %@", categoryError.localizedDescription);
+        }
+        
         BOOL success = [self swizzled_setMode:modifiedMode error:outError];
         enforceBuiltInMicInput(self);
         return success;
