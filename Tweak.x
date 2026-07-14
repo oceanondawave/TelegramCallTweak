@@ -34,7 +34,7 @@ static void setShareAudioOnlySetting(BOOL value) {
     [defaults synchronize];
 }
 
-// --- Dynamic Route Enforcer (Strict Event-driven) ---
+// --- Helper input routing enforcer ---
 
 static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (!getForceBuiltInMicSetting()) {
@@ -42,7 +42,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     }
     
     // Safety check: Only override if the current active route actually has an active input stream populated.
-    // This prevents splitting the route during early dialing/ringing states which causes call mute.
     AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
     if (currentRoute.inputs.count == 0) {
         NSLog(@"[TelegramCallTweak] Active inputs are empty. Audio session is in playback-only state (ringing/dialing). Skipping override.");
@@ -69,7 +68,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         if (!isAlreadyMic) {
             NSError *error = nil;
             BOOL success = [session setPreferredInput:builtInMic error:&error];
-            NSLog(@"[TelegramCallTweak] Safe event-driven override. Forced input to Built-in Mic: %d (Error: %@)", success, error);
+            NSLog(@"[TelegramCallTweak] Forced input to Built-in Mic: %d (Error: %@)", success, error);
         } else {
             NSLog(@"[TelegramCallTweak] Built-in Mic is already the active input.");
         }
@@ -83,16 +82,29 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 @implementation AVAudioSession (TweakCategoryHook)
 
+// Trick Telegram's category option checks: Whenever Telegram queries categoryOptions, we return HFP allowed (value 37)
+// to prevent it from entering a configuration rewrite loop.
+- (AVAudioSessionCategoryOptions)swizzled_categoryOptions {
+    AVAudioSessionCategoryOptions realOptions = [self swizzled_categoryOptions];
+    if (getForceBuiltInMicSetting()) {
+        // If we internally configured 33, trick the caller into thinking it is 37 (HFP + A2DP + Speaker)
+        if (realOptions == (AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker)) {
+            return (AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker);
+        }
+    }
+    return realOptions;
+}
+
 - (BOOL)swizzled_setCategory:(AVAudioSessionCategory)category mode:(AVAudioSessionMode)mode options:(AVAudioSessionCategoryOptions)options error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        // Force A2DP + Speaker, strip HFP (Bluetooth standard category 4)
+        // Force A2DP + Speaker, strip HFP (Bluetooth category option 4)
         AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
         
         AVAudioSessionMode modifiedMode = mode;
         if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat mode to enable route splitting
+            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat layout to allow route splitting
         }
         
         BOOL success = [self swizzled_setCategory:category mode:modifiedMode options:modifiedOptions error:outError];
@@ -255,6 +267,7 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(avAudioSessionClass, @selector(setCategory:mode:options:error:), @selector(swizzled_setCategory:mode:options:error:));
         swizzle(avAudioSessionClass, @selector(setCategory:withOptions:error:), @selector(swizzled_setCategory:withOptions:error:));
         swizzle(avAudioSessionClass, @selector(setMode:error:), @selector(swizzled_setMode:error:));
+        swizzle(avAudioSessionClass, @selector(categoryOptions), @selector(swizzled_categoryOptions));
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category and mode switches successfully.");
     }
     
