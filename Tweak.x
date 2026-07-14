@@ -114,16 +114,20 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     return [self swizzled_setCategory:category mode:mode options:options error:outError];
 }
 
-- (BOOL)swizzled_setCategory:(AVAudioSessionCategory)category withOptions:(AVAudioSessionCategoryOptions)options error:(NSError **)outError {
+// Hooking correct Apple selector setCategory:options:error: instead of setCategory:withOptions:error:
+- (BOOL)swizzled_setCategory:(AVAudioSessionCategory)category options:(AVAudioSessionCategoryOptions)options error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
-        NSLog(@"[TelegramCallTweak] Intercepted setCategory:withOptions: Category=%@, Options=%lu", category, (unsigned long)options);
+        NSLog(@"[TelegramCallTweak] Intercepted setCategory:options: Category=%@, Options=%lu", category, (unsigned long)options);
         
         AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker;
-        BOOL success = [self swizzled_setCategory:category withOptions:modifiedOptions error:outError];
+        
+        NSLog(@"[TelegramCallTweak] Modified Options: %lu", (unsigned long)modifiedOptions);
+        
+        BOOL success = [self swizzled_setCategory:category options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
         return success;
     }
-    return [self swizzled_setCategory:category withOptions:options error:outError];
+    return [self swizzled_setCategory:category options:options error:outError];
 }
 
 - (BOOL)swizzled_setMode:(AVAudioSessionMode)mode error:(NSError **)outError {
@@ -265,7 +269,7 @@ __attribute__((constructor)) static void initTweak() {
     Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
     if (avAudioSessionClass) {
         swizzle(avAudioSessionClass, @selector(setCategory:mode:options:error:), @selector(swizzled_setCategory:mode:options:error:));
-        swizzle(avAudioSessionClass, @selector(setCategory:withOptions:error:), @selector(swizzled_setCategory:withOptions:error:));
+        swizzle(avAudioSessionClass, @selector(setCategory:options:error:), @selector(swizzled_setCategory:options:error:));
         swizzle(avAudioSessionClass, @selector(setMode:error:), @selector(swizzled_setMode:error:));
         swizzle(avAudioSessionClass, @selector(categoryOptions), @selector(swizzled_categoryOptions));
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category and mode switches successfully.");
