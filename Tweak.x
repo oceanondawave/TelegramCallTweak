@@ -59,21 +59,21 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         return;
     }
     
-    // Safety check: Only override when there is an active Bluetooth output connected in the routing path.
-    // This prevents overriding the microphone when the session is still dialing over internal receiver/speaker, avoiding the outgoing call mute.
-    BOOL hasBluetoothOutput = NO;
+    // Safety check: Only override when the active output is NOT the built-in receiver or speaker.
+    // If the active output is an external accessory (Bluetooth headset, A2DP output, AirPods, headphones), we force the built-in mic.
+    // This safely prevents dialing mute because during dialing/ringing, the route output is directed to internal channels.
+    BOOL hasExternalAccessoryOutput = NO;
     for (AVAudioSessionPortDescription *desc in currentRoute.outputs) {
-        if ([desc.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
-            [desc.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
-            [desc.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
-            [desc.portType isEqualToString:AVAudioSessionPortHeadphones]) {
-            hasBluetoothOutput = YES;
+        NSString *portType = desc.portType;
+        if (![portType isEqualToString:AVAudioSessionPortBuiltInReceiver] &&
+            ![portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) {
+            hasExternalAccessoryOutput = YES;
             break;
         }
     }
     
-    if (!hasBluetoothOutput) {
-        NSLog(@"[TelegramCallTweak] No active Bluetooth output detected. Skipping override to prevent dialing mute.");
+    if (!hasExternalAccessoryOutput) {
+        NSLog(@"[TelegramCallTweak] Active output is internal receiver/speaker. Skipping override to prevent dialing mute.");
         return;
     }
     
@@ -191,7 +191,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
             modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
             
             // Force the audio session to PlayAndRecord + VideoChat + AllowBluetoothA2DP
-            // directly using the raw C pointer. This locks options to 32 safely with zero loop crashes.
             if (gOriginalSetCategoryWithModeOptions) {
                 NSError *categoryError = nil;
                 gOriginalSetCategoryWithModeOptions(self, @selector(setCategory:mode:options:error:), AVAudioSessionCategoryPlayAndRecord, AVAudioSessionModeVideoChat, AVAudioSessionCategoryOptionAllowBluetoothA2DP, &categoryError);
