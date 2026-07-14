@@ -2,18 +2,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Function Pointer Types for Original System Implementations ---
-
-typedef BOOL (*SetCategoryWithOptionsIMP)(id, SEL, AVAudioSessionCategory, AVAudioSessionCategoryOptions, NSError **);
-typedef BOOL (*SetCategoryWithModeOptionsIMP)(id, SEL, AVAudioSessionCategory, AVAudioSessionMode, AVAudioSessionCategoryOptions, NSError **);
-typedef BOOL (*SetModeIMP)(id, SEL, AVAudioSessionMode, NSError **);
-typedef AVAudioSessionCategoryOptions (*CategoryOptionsIMP)(id, SEL);
-
-static SetCategoryWithOptionsIMP gOriginalSetCategoryWithOptions = NULL;
-static SetCategoryWithModeOptionsIMP gOriginalSetCategoryWithModeOptions = NULL;
-static SetModeIMP gOriginalSetMode = NULL;
-static CategoryOptionsIMP gOriginalCategoryOptions = NULL;
-
 // --- Helper storage for custom settings locally inside standard UserDefaults ---
 
 static BOOL getForceBuiltInMicSetting() {
@@ -59,6 +47,24 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
         return;
     }
     
+    // Safety check: Only override when there is an active Bluetooth output connected in the routing path.
+    // This prevents overriding the microphone when the session is still dialing over internal receiver/speaker, avoiding the outgoing call mute.
+    BOOL hasBluetoothOutput = NO;
+    for (AVAudioSessionPortDescription *desc in currentRoute.outputs) {
+        if ([desc.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+            [desc.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+            [desc.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
+            [desc.portType isEqualToString:AVAudioSessionPortHeadphones]) {
+            hasBluetoothOutput = YES;
+            break;
+        }
+    }
+    
+    if (!hasBluetoothOutput) {
+        NSLog(@"[TelegramCallTweak] No active Bluetooth output detected. Skipping override to prevent dialing mute.");
+        return;
+    }
+    
     AVAudioSessionPortDescription *builtInMic = nil;
     for (AVAudioSessionPortDescription *port in session.availableInputs) {
         if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
@@ -96,7 +102,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 // Trick Telegram's category option checks: Whenever Telegram queries categoryOptions, we return HFP allowed (value 37)
 // to prevent it from entering a configuration rewrite loop.
 - (AVAudioSessionCategoryOptions)swizzled_categoryOptions {
-    AVAudioSessionCategoryOptions realOptions = gOriginalCategoryOptions ? gOriginalCategoryOptions(self, _cmd) : [self swizzled_categoryOptions];
+    AVAudioSessionCategoryOptions realOptions = [self swizzled_categoryOptions];
     if (getForceBuiltInMicSetting()) {
         // If we internally configured 32, trick Telegram's checks into thinking it is 37 (HFP + A2DP + Speaker)
         if (realOptions == AVAudioSessionCategoryOptionAllowBluetoothA2DP) {
@@ -110,24 +116,20 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:mode:options: Category=%@, Mode=%@, Options=%lu", category, mode, (unsigned long)options);
         
-        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+        // Force Category to PlayAndRecord (if it is a call) and options to A2DP (32)
+        AVAudioSessionCategoryOptions modifiedOptions = options;
+        AVAudioSessionCategory modifiedCategory = category;
         AVAudioSessionMode modifiedMode = mode;
-        if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat; // Use VideoChat layout to allow route splitting
+        
+        if ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord] || [mode isEqualToString:AVAudioSessionModeVoiceChat] || [mode isEqualToString:AVAudioSessionModeVideoChat]) {
+            modifiedCategory = AVAudioSessionCategoryPlayAndRecord;
+            modifiedMode = AVAudioSessionModeVideoChat;
+            modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
         }
         
-        BOOL success = NO;
-        if (gOriginalSetCategoryWithModeOptions) {
-            success = gOriginalSetCategoryWithModeOptions(self, @selector(setCategory:mode:options:error:), category, modifiedMode, modifiedOptions, outError);
-        } else {
-            success = [self swizzled_setCategory:category mode:modifiedMode options:modifiedOptions error:outError];
-        }
+        BOOL success = [self swizzled_setCategory:modifiedCategory mode:modifiedMode options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
         return success;
-    }
-    
-    if (gOriginalSetCategoryWithModeOptions) {
-         return gOriginalSetCategoryWithModeOptions(self, @selector(setCategory:mode:options:error:), category, mode, options, outError);
     }
     return [self swizzled_setCategory:category mode:mode options:options error:outError];
 }
@@ -136,19 +138,17 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     if (getForceBuiltInMicSetting()) {
         NSLog(@"[TelegramCallTweak] Intercepted setCategory:options: Category=%@, Options=%lu", category, (unsigned long)options);
         
-        AVAudioSessionCategoryOptions modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-        BOOL success = NO;
-        if (gOriginalSetCategoryWithOptions) {
-            success = gOriginalSetCategoryWithOptions(self, @selector(setCategory:options:error:), category, modifiedOptions, outError);
-        } else {
-            success = [self swizzled_setCategory:category options:modifiedOptions error:outError];
+        AVAudioSessionCategoryOptions modifiedOptions = options;
+        AVAudioSessionCategory modifiedCategory = category;
+        
+        if ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord]) {
+            modifiedCategory = AVAudioSessionCategoryPlayAndRecord;
+            modifiedOptions = AVAudioSessionCategoryOptionAllowBluetoothA2DP;
         }
+        
+        BOOL success = [self swizzled_setCategory:modifiedCategory options:modifiedOptions error:outError];
         enforceBuiltInMicInput(self);
         return success;
-    }
-    
-    if (gOriginalSetCategoryWithOptions) {
-        return gOriginalSetCategoryWithOptions(self, @selector(setCategory:options:error:), category, options, outError);
     }
     return [self swizzled_setCategory:category options:options error:outError];
 }
@@ -162,28 +162,9 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
             modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
         }
         
-        // SAFE CATEGORY OPTIONS UPDATE: Invoke the original, system method directly via the global pointer.
-        // This completely bypasses our hooks and avoids recursion crash loops.
-        if (gOriginalSetCategoryWithOptions) {
-            NSError *categoryError = nil;
-            gOriginalSetCategoryWithOptions(self, @selector(setCategory:options:error:), self.category, AVAudioSessionCategoryOptionAllowBluetoothA2DP, &categoryError);
-            if (categoryError) {
-                NSLog(@"[TelegramCallTweak] Error setting category inside setMode: %@", categoryError.localizedDescription);
-            }
-        }
-        
-        BOOL success = NO;
-        if (gOriginalSetMode) {
-            success = gOriginalSetMode(self, @selector(setMode:error:), modifiedMode, outError);
-        } else {
-            success = [self swizzled_setMode:modifiedMode error:outError];
-        }
+        BOOL success = [self swizzled_setMode:modifiedMode error:outError];
         enforceBuiltInMicInput(self);
         return success;
-    }
-    
-    if (gOriginalSetMode) {
-        return gOriginalSetMode(self, @selector(setMode:error:), mode, outError);
     }
     return [self swizzled_setMode:mode error:outError];
 }
@@ -309,22 +290,9 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Save original implementations of AVAudioSession methods BEFORE swizzling them
+    // Hook AVAudioSession category & mode configuration methods directly
     Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
     if (avAudioSessionClass) {
-        Method m1 = class_getInstanceMethod(avAudioSessionClass, @selector(setCategory:options:error:));
-        if (m1) gOriginalSetCategoryWithOptions = (SetCategoryWithOptionsIMP)method_getImplementation(m1);
-        
-        Method m2 = class_getInstanceMethod(avAudioSessionClass, @selector(setCategory:mode:options:error:));
-        if (m2) gOriginalSetCategoryWithModeOptions = (SetCategoryWithModeOptionsIMP)method_getImplementation(m2);
-        
-        Method m3 = class_getInstanceMethod(avAudioSessionClass, @selector(setMode:error:));
-        if (m3) gOriginalSetMode = (SetModeIMP)method_getImplementation(m3);
-        
-        Method m4 = class_getInstanceMethod(avAudioSessionClass, @selector(categoryOptions));
-        if (m4) gOriginalCategoryOptions = (CategoryOptionsIMP)method_getImplementation(m4);
-        
-        // Swizzle implementations
         swizzle(avAudioSessionClass, @selector(setCategory:mode:options:error:), @selector(swizzled_setCategory:mode:options:error:));
         swizzle(avAudioSessionClass, @selector(setCategory:options:error:), @selector(swizzled_setCategory:options:error:));
         swizzle(avAudioSessionClass, @selector(setMode:error:), @selector(swizzled_setMode:error:));
