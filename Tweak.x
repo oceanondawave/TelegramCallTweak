@@ -142,18 +142,32 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 }
 @end
 
-// 4. Hook AppDelegate to show launch confirmation toast
-@interface NSObject (AppDelegateHook)
+// 4. Hook UIApplication to show launch confirmation toast
+@interface NSObject (UIApplicationHook)
 @end
-@implementation NSObject (AppDelegateHook)
-- (BOOL)swizzled_application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    BOOL result = [self swizzled_application:application didFinishLaunchingWithOptions:launchOptions];
+@implementation NSObject (UIApplicationHook)
+- (instancetype)swizzled_init {
+    id instance = [self swizzled_init];
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
-        if (!rootVC) {
-            rootVC = [[application keyWindow] rootViewController];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *window = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive) {
+                    for (UIWindow *w in scene.windows) {
+                        if (w.isKeyWindow) {
+                            window = w;
+                            break;
+                        }
+                    }
+                }
+            }
         }
+        if (!window) {
+            window = [UIApplication sharedApplication].keyWindow;
+        }
+        
+        UIViewController *rootVC = window.rootViewController;
         if (rootVC) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
                                                                            message:@"TelegramCallTweak has loaded successfully!"
@@ -163,7 +177,7 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
         }
     });
     
-    return result;
+    return instance;
 }
 @end
 
@@ -171,10 +185,10 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
     
-    // Hook AppDelegate didFinishLaunching
-    Class appDelegateClass = NSClassFromString(@"AppDelegate");
-    if (appDelegateClass) {
-        swizzle(appDelegateClass, @selector(application:didFinishLaunchingWithOptions:), @selector(swizzled_application:didFinishLaunchingWithOptions:));
+    // Hook UIApplication init
+    Class uiAppClass = NSClassFromString(@"UIApplication");
+    if (uiAppClass) {
+        swizzle(uiAppClass, @selector(init), @selector(swizzled_init));
     }
     
     // Hook ManagedAudioSessionImpl
