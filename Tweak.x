@@ -2,30 +2,41 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Helper storage for custom settings from Swiftgram's App Group ---
-
-static NSUserDefaults *getSwiftgramGroupDefaults() {
-    NSString *baseBundleId = [[NSBundle mainBundle] bundleIdentifier];
-    if ([[[NSBundle mainBundle] bundlePath] hasSuffix:@".appex"]) {
-        NSRange lastDotRange = [baseBundleId rangeOfString:@"." options:NSBackwardsSearch];
-        if (lastDotRange.location != NSNotFound) {
-            baseBundleId = [baseBundleId substringToIndex:lastDotRange.location];
-        }
-    }
-    NSString *groupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
-    return [[NSUserDefaults alloc] initWithSuiteName:groupName];
-}
+// --- Helper storage for custom settings locally inside standard UserDefaults ---
 
 static BOOL getForceBuiltInMicSetting() {
-    BOOL val = [getSwiftgramGroupDefaults() boolForKey:@"forceBuiltInMic"];
-    NSLog(@"[TelegramCallTweak] Reading 'forceBuiltInMic' setting value: %d", val);
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    // Register YES as the default fallback value if not set
+    if ([defaults objectForKey:@"tweak_forceBuiltInMic"] == nil) {
+        [defaults setBool:YES forKey:@"tweak_forceBuiltInMic"];
+        [defaults synchronize];
+    }
+    BOOL val = [defaults boolForKey:@"tweak_forceBuiltInMic"];
+    NSLog(@"[TelegramCallTweak] Reading 'tweak_forceBuiltInMic' value: %d", val);
     return val;
+}
+
+static void setForceBuiltInMicSetting(BOOL value) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:value forKey:@"tweak_forceBuiltInMic"];
+    [defaults synchronize];
 }
 
 static BOOL getShareAudioOnlySetting() {
-    BOOL val = [getSwiftgramGroupDefaults() boolForKey:@"shareAudioOnly"];
-    NSLog(@"[TelegramCallTweak] Reading 'shareAudioOnly' setting value: %d", val);
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:@"tweak_shareAudioOnly"] == nil) {
+        [defaults setBool:YES forKey:@"tweak_shareAudioOnly"];
+        [defaults synchronize];
+    }
+    BOOL val = [defaults boolForKey:@"tweak_shareAudioOnly"];
+    NSLog(@"[TelegramCallTweak] Reading 'tweak_shareAudioOnly' value: %d", val);
     return val;
+}
+
+static void setShareAudioOnlySetting(BOOL value) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:value forKey:@"tweak_shareAudioOnly"];
+    [defaults synchronize];
 }
 
 // --- Dynamic Route Enforcer (Direct Notification Listener) ---
@@ -47,7 +58,6 @@ static void enforceBuiltInMicRoute() {
     }
     
     if (builtInMic) {
-        // Only set it if it's not already the active input
         AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
         BOOL isAlreadyMic = NO;
         for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
@@ -77,13 +87,11 @@ static void enforceBuiltInMicRoute() {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // Observe system audio route changes
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(audioRouteChanged:)
                                                      name:AVAudioSessionRouteChangeNotification
                                                    object:nil];
         
-        // Also enforce whenever the app goes to foreground or joins calls
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(appDidBecomeActive:)
                                                      name:UIApplicationDidBecomeActiveNotification
@@ -118,7 +126,6 @@ static TweakAudioObserver *gAudioObserver = nil;
 @implementation VideoCameraCapturerHook
 - (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (getShareAudioOnlySetting()) {
-        NSLog(@"[TelegramCallTweak] Share Audio Only is ON. Dropping video frame buffer.");
         return;
     }
     
@@ -133,7 +140,7 @@ static TweakAudioObserver *gAudioObserver = nil;
 }
 @end
 
-// 2. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
+// 2. Hook UIWindow makeKeyAndVisible to show settings preferences menu on startup
 @interface UIWindow (TweakHook)
 @end
 @implementation UIWindow (TweakHook)
@@ -142,13 +149,31 @@ static TweakAudioObserver *gAudioObserver = nil;
     
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIViewController *rootVC = self.rootViewController;
             if (rootVC) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
-                                                                               message:@"TelegramCallTweak has loaded successfully!"
+                NSString *micStatus = getForceBuiltInMicSetting() ? @"ON" : @"OFF";
+                NSString *audioOnlyStatus = getShareAudioOnlySetting() ? @"ON" : @"OFF";
+                
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Telegram Call Tweak"
+                                                                               message:@"Configure Tweak Preferences (saved locally)"
                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                
+                [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Force Built-in Mic (%@)", micStatus]
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+                    setForceBuiltInMicSetting(!getForceBuiltInMicSetting());
+                    enforceBuiltInMicRoute();
+                }]];
+                
+                [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Share Audio Only (%@)", audioOnlyStatus]
+                                                          style:UIAlertActionStyleDefault
+                                                        handler:^(UIAlertAction *action) {
+                    setShareAudioOnlySetting(!getShareAudioOnlySetting());
+                }]];
+                
+                [alert addAction:[UIAlertAction actionWithTitle:@"Dismiss" style:UIAlertActionStyleCancel handler:nil]];
+                
                 [rootVC presentViewController:alert animated:YES completion:nil];
             }
         });
