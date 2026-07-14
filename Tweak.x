@@ -2,22 +2,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Declaring interfaces to resolve compile warnings ---
-
-@interface PresentationCallImpl : NSObject
-- (BOOL)isScreencastActive;
-- (void)disableScreencast;
-@end
-
-@interface VoiceChatCameraPreviewControllerNode : NSObject
-- (id)valueForKey:(NSString *)key;
-- (void)setValue:(id)value forKey:(NSString *)key;
-@end
-
-@interface WheelControlNodeItem : NSObject
-- (instancetype)initWithTitle:(NSString *)title;
-@end
-
 // --- Helper storage for custom call settings with persistent settings ---
 
 static NSString *const kSettingsSuiteName = @"ph.telegra.telegramcalltweak";
@@ -29,21 +13,9 @@ static BOOL getForceBuiltInMicSetting() {
     return [defaults boolForKey:kForceBuiltInMicKey];
 }
 
-static void setForceBuiltInMicSetting(BOOL value) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
-    [defaults setBool:value forKey:kForceBuiltInMicKey];
-    [defaults synchronize];
-}
-
 static BOOL getShareAudioOnlySetting() {
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
     return [defaults boolForKey:kShareAudioOnlyKey];
-}
-
-static void setShareAudioOnlySetting(BOOL value) {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
-    [defaults setBool:value forKey:kShareAudioOnlyKey];
-    [defaults synchronize];
 }
 
 // --- Dynamic Swizzling Implementation (TrollStore / Sideload Friendly) ---
@@ -53,7 +25,6 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
     
     if (!originalMethod || !swizzledMethod) {
-        NSLog(@"[TelegramCallTweak] Error: could not find methods to swizzle for class %@", NSStringFromClass(class));
         return;
     }
     
@@ -74,80 +45,50 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 
 // --- Swizzled Methods ---
 
-// 1. ManagedAudioSessionImpl Hook
-@interface NSObject (ManagedAudioSessionImplHook)
+// 1. Hook public AVAudioSession to intercept and force Built-in Mic
+@interface AVAudioSession (TweakHook)
 @end
-@implementation NSObject (ManagedAudioSessionImplHook)
-- (void)swizzled_updateAudioSessionType:(NSInteger)type outputMode:(NSInteger)outputMode {
-    [self swizzled_updateAudioSessionType:type outputMode:outputMode];
+@implementation AVAudioSession (TweakHook)
+- (BOOL)swizzled_setPreferredInput:(AVAudioSessionPortDescription *)inPort error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
-        NSArray<AVAudioSessionPortDescription *> *inputs = [[AVAudioSession sharedInstance] availableInputs];
+        // Find built-in mic port
         AVAudioSessionPortDescription *builtInMic = nil;
-        for (AVAudioSessionPortDescription *input in inputs) {
-            if ([input.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
-                builtInMic = input;
+        for (AVAudioSessionPortDescription *port in self.availableInputs) {
+            if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                builtInMic = port;
                 break;
             }
         }
         if (builtInMic) {
-            NSError *error = nil;
-            [[AVAudioSession sharedInstance] setPreferredInput:builtInMic error:&error];
+            NSLog(@"[TelegramCallTweak] Redirecting setPreferredInput from %@ to Built-in Mic", inPort.portType);
+            return [self swizzled_setPreferredInput:builtInMic error:outError];
         }
     }
+    return [self swizzled_setPreferredInput:inPort error:outError];
 }
 @end
 
-// 2. PresentationCallImpl Hooks
-@interface NSObject (PresentationCallImplHook)
+// 2. Hook WebRTC video capturer to block outgoing video frames when Audio-Only is enabled
+@interface RTCCameraVideoCapturerHook : NSObject
 @end
-@implementation NSObject (PresentationCallImplHook)
-- (void)swizzled_videoButtonPressed {
-    PresentationCallImpl *call = (PresentationCallImpl *)self;
-    if ([call isScreencastActive]) {
-        [call disableScreencast];
-    } else {
-        [self swizzled_videoButtonPressed];
-    }
-}
-
-- (void)swizzled_handleScreencastFrame:(id)frame buffer:(CVPixelBufferRef)pixelBuffer {
+@implementation RTCCameraVideoCapturerHook
+- (void)swizzled_captureOutput:(id)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(id)connection {
     if (getShareAudioOnlySetting()) {
+        // Drop the frame
         return;
     }
-    [self swizzled_handleScreencastFrame:frame buffer:pixelBuffer];
-}
-@end
-
-// 3. VoiceChatCameraPreviewControllerNode Hooks
-@interface NSObject (VoiceChatCameraPreviewControllerNodeHook)
-@end
-@implementation NSObject (VoiceChatCameraPreviewControllerNodeHook)
-- (void)swizzled_setupWheelNode {
-    [self swizzled_setupWheelNode];
-    
-    id wheelNode = [self valueForKey:@"wheelNode"];
-    if (wheelNode) {
-        NSMutableArray *items = [[wheelNode valueForKey:@"items"] mutableCopy];
-        
-        WheelControlNodeItem *audioTab = [NSClassFromString(@"WheelControlNodeItem") alloc];
-        if ([audioTab respondsToSelector:@selector(initWithTitle:)]) {
-            audioTab = [audioTab initWithTitle:@"Share Audio Only"];
-        }
-        
-        if (audioTab) {
-            [items insertObject:audioTab atIndex:0];
-            [wheelNode setValue:items forKey:@"items"];
-        }
+    // Forward to original implementation
+    typedef void (*OriginalMethodType)(id, SEL, id, CMSampleBufferRef, id);
+    SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
+    Method originalMethod = class_getInstanceMethod([self class], selector);
+    if (originalMethod) {
+        OriginalMethodType imp = (OriginalMethodType)method_getImplementation(originalMethod);
+        imp(self, selector, output, sampleBuffer, connection);
     }
 }
-
-- (void)swizzled_wheelNodeSelectedIndexChanged:(NSInteger)index {
-    [self swizzled_wheelNodeSelectedIndexChanged:index];
-    setShareAudioOnlySetting(index == 0);
-}
 @end
 
-// 4. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
+// 3. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
 @interface UIWindow (TweakHook)
 @end
 @implementation UIWindow (TweakHook)
@@ -180,33 +121,29 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Hook ManagedAudioSessionImpl using its mangled Swift name: _TtC13TelegramAudio23ManagedAudioSessionImpl
-    Class managedAudioSession = NSClassFromString(@"_TtC13TelegramAudio23ManagedAudioSessionImpl");
-    if (managedAudioSession) {
-        NSLog(@"[TelegramCallTweak] Hooking ManagedAudioSessionImpl...");
-        swizzle(managedAudioSession, @selector(updateAudioSessionType:outputMode:), @selector(swizzled_updateAudioSessionType:outputMode:));
-    } else {
-        NSLog(@"[TelegramCallTweak] Warning: ManagedAudioSessionImpl not found");
+    // Hook system AVAudioSession input routing
+    Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
+    if (avAudioSessionClass) {
+        NSLog(@"[TelegramCallTweak] Hooking AVAudioSession...");
+        swizzle(avAudioSessionClass, @selector(setPreferredInput:error:), @selector(swizzled_setPreferredInput:error:));
     }
     
-    // Hook PresentationCallImpl using its mangled Swift name: _TtC15TelegramCallsUI20PresentationCallImpl
-    Class presentationCall = NSClassFromString(@"_TtC15TelegramCallsUI20PresentationCallImpl");
-    if (presentationCall) {
-        NSLog(@"[TelegramCallTweak] Hooking PresentationCallImpl...");
-        swizzle(presentationCall, @selector(videoButtonPressed), @selector(swizzled_videoButtonPressed));
-        swizzle(presentationCall, @selector(handleScreencastFrame:buffer:), @selector(swizzled_handleScreencastFrame:buffer:));
-    } else {
-        NSLog(@"[TelegramCallTweak] Warning: PresentationCallImpl not found");
-    }
-    
-    // Hook VoiceChatCameraPreviewControllerNode using its mangled Swift name: _TtC15TelegramCallsUI36VoiceChatCameraPreviewControllerNode
-    Class cameraPreviewNode = NSClassFromString(@"_TtC15TelegramCallsUI36VoiceChatCameraPreviewControllerNode");
-    if (cameraPreviewNode) {
-        NSLog(@"[TelegramCallTweak] Hooking VoiceChatCameraPreviewControllerNode...");
-        swizzle(cameraPreviewNode, @selector(setupWheelNode), @selector(swizzled_setupWheelNode));
-        swizzle(cameraPreviewNode, @selector(wheelNodeSelectedIndexChanged:), @selector(swizzled_wheelNodeSelectedIndexChanged:));
-    } else {
-        NSLog(@"[TelegramCallTweak] Warning: VoiceChatCameraPreviewControllerNode not found");
+    // Hook WebRTC Camera / Screen Capturer
+    Class rtcCameraCapturer = NSClassFromString(@"RTCCameraVideoCapturer");
+    if (rtcCameraCapturer) {
+        NSLog(@"[TelegramCallTweak] Hooking RTCCameraVideoCapturer...");
+        SEL captureSelector = NSSelectorFromString(@"captureOutput:didOutputSampleBuffer:fromConnection:");
+        if (class_getInstanceMethod(rtcCameraCapturer, captureSelector)) {
+            // Inject swizzled method dynamically
+            Method swizzledMethod = class_getInstanceMethod([RTCCameraVideoCapturerHook class], @selector(swizzled_captureOutput:didOutputSampleBuffer:fromConnection:));
+            BOOL added = class_addMethod(rtcCameraCapturer,
+                                         NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"),
+                                         method_getImplementation(swizzledMethod),
+                                         method_getTypeEncoding(swizzledMethod));
+            if (added) {
+                swizzle(rtcCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
+            }
+        }
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
