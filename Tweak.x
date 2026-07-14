@@ -125,37 +125,6 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     return [self swizzled_setCategory:category options:options error:outError];
 }
 
-- (BOOL)swizzled_setMode:(AVAudioSessionMode)mode error:(NSError **)outError {
-    if (getForceBuiltInMicSetting()) {
-        NSLog(@"[TelegramCallTweak] Intercepted setMode: Mode=%@", mode);
-        
-        AVAudioSessionMode modifiedMode = mode;
-        if ([mode isEqualToString:AVAudioSessionModeVoiceChat]) {
-            modifiedMode = AVAudioSessionModeVideoChat; // VideoChat mode allows split input/output
-        }
-        
-        // BYPASS OBJECTIVE-C DISPATCH: Grab the direct function pointer of swizzled_setCategory:options:error:
-        // (which represents the original AVAudioSession implementation) to avoid infinite recursion stack overflows.
-        SEL selector = @selector(swizzled_setCategory:options:error:);
-        Method originalMethod = class_getInstanceMethod([AVAudioSession class], selector);
-        if (originalMethod) {
-            typedef BOOL (*OriginalSetCategoryType)(id, SEL, AVAudioSessionCategory, AVAudioSessionCategoryOptions, NSError **);
-            OriginalSetCategoryType imp = (OriginalSetCategoryType)method_getImplementation(originalMethod);
-            
-            NSError *categoryError = nil;
-            imp(self, selector, self.category, AVAudioSessionCategoryOptionAllowBluetoothA2DP, &categoryError);
-            if (categoryError) {
-                NSLog(@"[TelegramCallTweak] Error setting category inside setMode: %@", categoryError.localizedDescription);
-            }
-        }
-        
-        BOOL success = [self swizzled_setMode:modifiedMode error:outError];
-        enforceBuiltInMicInput(self);
-        return success;
-    }
-    return [self swizzled_setMode:mode error:outError];
-}
-
 @end
 
 // --- Route Change Notification Observer ---
@@ -277,12 +246,11 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Hook AVAudioSession setCategory / setMode methods directly
+    // Hook AVAudioSession setCategory methods directly (setMode is removed to prevent stack recursion crashes)
     Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
     if (avAudioSessionClass) {
         swizzle(avAudioSessionClass, @selector(setCategory:mode:options:error:), @selector(swizzled_setCategory:mode:options:error:));
         swizzle(avAudioSessionClass, @selector(setCategory:options:error:), @selector(swizzled_setCategory:options:error:));
-        swizzle(avAudioSessionClass, @selector(setMode:error:), @selector(swizzled_setMode:error:));
         swizzle(avAudioSessionClass, @selector(categoryOptions), @selector(swizzled_categoryOptions));
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category and mode switches successfully.");
     }
