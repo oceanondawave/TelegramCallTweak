@@ -1,0 +1,11 @@
+ARCHS = arm64 arm64e
+TARGET := iphone:clang:latest:15.0
+
+include $(THEOS)/makefiles/common.mk
+
+TWEAK_NAME = TelegramCallTweak
+
+TelegramCallTweak_FILES = Tweak.x
+TelegramCallTweak_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+
+include $(THEOS)/makefiles/tweak.mk
