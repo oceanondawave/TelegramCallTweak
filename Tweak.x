@@ -116,9 +116,10 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 - (AVAudioSessionCategoryOptions)swizzled_categoryOptions {
     AVAudioSessionCategoryOptions realOptions = gOriginalCategoryOptions ? gOriginalCategoryOptions(self, _cmd) : [self swizzled_categoryOptions];
     if (getForceBuiltInMicSetting()) {
-        // If we internally configured 32, trick Telegram's checks into thinking it is 37 (HFP + A2DP + Speaker)
-        if (realOptions == AVAudioSessionCategoryOptionAllowBluetoothA2DP) {
-            return (AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionDefaultToSpeaker);
+        // Bitwise check: If A2DP option flag (32) is present anywhere in the session option mask,
+        // we append AllowBluetooth (4) and DefaultToSpeaker (1) to trick Telegram.
+        if (realOptions & AVAudioSessionCategoryOptionAllowBluetoothA2DP) {
+            return (realOptions | AVAudioSessionCategoryOptionAllowBluetooth | AVAudioSessionCategoryOptionDefaultToSpeaker);
         }
     }
     return realOptions;
