@@ -13,17 +13,23 @@ static NSUserDefaults *getSwiftgramGroupDefaults() {
         }
     }
     NSString *groupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
+    NSLog(@"[TelegramCallTweak] Resolved App Group Name: %@", groupName);
     return [[NSUserDefaults alloc] initWithSuiteName:groupName];
 }
 
 static BOOL getForceBuiltInMicSetting() {
-    // Read directly from Swiftgram's forceBuiltInMic settings key
-    return [getSwiftgramGroupDefaults() boolForKey:@"forceBuiltInMic"];
+    NSUserDefaults *defaults = getSwiftgramGroupDefaults();
+    BOOL val = [defaults boolForKey:@"forceBuiltInMic"];
+    // Also print out the entire settings keys for debugging
+    NSLog(@"[TelegramCallTweak] Reading 'forceBuiltInMic' value: %d", val);
+    return val;
 }
 
 static BOOL getShareAudioOnlySetting() {
-    // Read directly from Swiftgram's shareAudioOnly settings key (or fallback key)
-    return [getSwiftgramGroupDefaults() boolForKey:@"shareAudioOnly"];
+    NSUserDefaults *defaults = getSwiftgramGroupDefaults();
+    BOOL val = [defaults boolForKey:@"shareAudioOnly"];
+    NSLog(@"[TelegramCallTweak] Reading 'shareAudioOnly' value: %d", val);
+    return val;
 }
 
 // --- Dynamic Swizzling Implementation (TrollStore / Sideload Friendly) ---
@@ -58,6 +64,7 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 @end
 @implementation AVAudioSession (TweakHook)
 - (BOOL)swizzled_setPreferredInput:(AVAudioSessionPortDescription *)inPort error:(NSError **)outError {
+    NSLog(@"[TelegramCallTweak] setPreferredInput called with port: %@", inPort.portType);
     if (getForceBuiltInMicSetting()) {
         AVAudioSessionPortDescription *builtInMic = nil;
         for (AVAudioSessionPortDescription *port in self.availableInputs) {
@@ -67,7 +74,7 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
             }
         }
         if (builtInMic) {
-            NSLog(@"[TelegramCallTweak] Redirecting setPreferredInput from %@ to Built-in Mic", inPort.portType);
+            NSLog(@"[TelegramCallTweak] Force Device Mic is ON. Redirecting setPreferredInput from %@ to Built-in Mic", inPort.portType);
             return [self swizzled_setPreferredInput:builtInMic error:outError];
         }
     }
@@ -81,7 +88,7 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 @implementation VideoCameraCapturerHook
 - (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (getShareAudioOnlySetting()) {
-        // Drop outgoing frame when sharing audio-only
+        NSLog(@"[TelegramCallTweak] Share Audio Only is ON. Dropping video frame buffer.");
         return;
     }
     // Forward to original implementation
