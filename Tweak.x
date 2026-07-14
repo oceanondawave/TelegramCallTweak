@@ -17,9 +17,33 @@
 - (instancetype)initWithTitle:(NSString *)title;
 @end
 
-// --- Helper storage for custom call settings ---
-static BOOL gForceBuiltInMic = NO;
-static BOOL gShareAudioOnly = NO;
+// --- Helper storage for custom call settings with persistent settings ---
+
+static NSString *const kSettingsSuiteName = @"ph.telegra.telegramcalltweak";
+static NSString *const kForceBuiltInMicKey = @"forceBuiltInMic";
+static NSString *const kShareAudioOnlyKey = @"shareAudioOnly";
+
+static BOOL getForceBuiltInMicSetting() {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
+    return [defaults boolForKey:kForceBuiltInMicKey];
+}
+
+static void setForceBuiltInMicSetting(BOOL value) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
+    [defaults setBool:value forKey:kForceBuiltInMicKey];
+    [defaults synchronize];
+}
+
+static BOOL getShareAudioOnlySetting() {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
+    return [defaults boolForKey:kShareAudioOnlyKey];
+}
+
+static void setShareAudioOnlySetting(BOOL value) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
+    [defaults setBool:value forKey:kShareAudioOnlyKey];
+    [defaults synchronize];
+}
 
 // --- Hooks ---
 
@@ -27,7 +51,7 @@ static BOOL gShareAudioOnly = NO;
 
 - (void)updateAudioSessionType:(NSInteger)type outputMode:(NSInteger)outputMode {
     %orig;
-    if (gForceBuiltInMic) {
+    if (getForceBuiltInMicSetting()) {
         NSArray<AVAudioSessionPortDescription *> *inputs = [[AVAudioSession sharedInstance] availableInputs];
         AVAudioSessionPortDescription *builtInMic = nil;
         for (AVAudioSessionPortDescription *input in inputs) {
@@ -60,7 +84,7 @@ static BOOL gShareAudioOnly = NO;
 }
 
 - (void)handleScreencastFrame:(id)frame buffer:(CVPixelBufferRef)pixelBuffer {
-    if (gShareAudioOnly) {
+    if (getShareAudioOnlySetting()) {
         // Skip frame processing to enforce audio-only sharing
         return;
     }
@@ -93,7 +117,7 @@ static BOOL gShareAudioOnly = NO;
 
 - (void)wheelNodeSelectedIndexChanged:(NSInteger)index {
     %orig;
-    gShareAudioOnly = (index == 0);
+    setShareAudioOnlySetting(index == 0);
 }
 
 %end
