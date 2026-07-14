@@ -2,20 +2,28 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Helper storage for custom call settings with persistent settings ---
+// --- Helper storage for custom call settings reading directly from Swiftgram's App Group ---
 
-static NSString *const kSettingsSuiteName = @"ph.telegra.telegramcalltweak";
-static NSString *const kForceBuiltInMicKey = @"forceBuiltInMic";
-static NSString *const kShareAudioOnlyKey = @"shareAudioOnly";
+static NSUserDefaults *getSwiftgramGroupDefaults() {
+    NSString *baseBundleId = [[NSBundle mainBundle] bundleIdentifier];
+    if ([[[NSBundle mainBundle] bundlePath] hasSuffix:@".appex"]) {
+        NSRange lastDotRange = [baseBundleId rangeOfString:@"." options:NSBackwardsSearch];
+        if (lastDotRange.location != NSNotFound) {
+            baseBundleId = [baseBundleId substringToIndex:lastDotRange.location];
+        }
+    }
+    NSString *groupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
+    return [[NSUserDefaults alloc] initWithSuiteName:groupName];
+}
 
 static BOOL getForceBuiltInMicSetting() {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
-    return [defaults boolForKey:kForceBuiltInMicKey];
+    // Read directly from Swiftgram's forceBuiltInMic settings key
+    return [getSwiftgramGroupDefaults() boolForKey:@"forceBuiltInMic"];
 }
 
 static BOOL getShareAudioOnlySetting() {
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kSettingsSuiteName];
-    return [defaults boolForKey:kShareAudioOnlyKey];
+    // Read directly from Swiftgram's shareAudioOnly settings key (or fallback key)
+    return [getSwiftgramGroupDefaults() boolForKey:@"shareAudioOnly"];
 }
 
 // --- Dynamic Swizzling Implementation (TrollStore / Sideload Friendly) ---
@@ -51,7 +59,6 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 @implementation AVAudioSession (TweakHook)
 - (BOOL)swizzled_setPreferredInput:(AVAudioSessionPortDescription *)inPort error:(NSError **)outError {
     if (getForceBuiltInMicSetting()) {
-        // Find built-in mic port
         AVAudioSessionPortDescription *builtInMic = nil;
         for (AVAudioSessionPortDescription *port in self.availableInputs) {
             if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
@@ -68,22 +75,22 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 }
 @end
 
-// 2. Hook WebRTC video capturer to block outgoing video frames when Audio-Only is enabled
-@interface RTCCameraVideoCapturerHook : NSObject
+// 2. Hook VideoCameraCapturer to drop outgoing frames when Share Audio Only is enabled
+@interface VideoCameraCapturerHook : NSObject
 @end
-@implementation RTCCameraVideoCapturerHook
-- (void)swizzled_captureOutput:(id)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(id)connection {
+@implementation VideoCameraCapturerHook
+- (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (getShareAudioOnlySetting()) {
-        // Drop the frame
+        // Drop outgoing frame when sharing audio-only
         return;
     }
     // Forward to original implementation
-    typedef void (*OriginalMethodType)(id, SEL, id, CMSampleBufferRef, id);
+    typedef void (*OriginalMethodType)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *);
     SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
     Method originalMethod = class_getInstanceMethod([self class], selector);
     if (originalMethod) {
         OriginalMethodType imp = (OriginalMethodType)method_getImplementation(originalMethod);
-        imp(self, selector, output, sampleBuffer, connection);
+        imp(self, selector, captureOutput, sampleBuffer, connection);
     }
 }
 @end
@@ -128,20 +135,19 @@ __attribute__((constructor)) static void initTweak() {
         swizzle(avAudioSessionClass, @selector(setPreferredInput:error:), @selector(swizzled_setPreferredInput:error:));
     }
     
-    // Hook WebRTC Camera / Screen Capturer
-    Class rtcCameraCapturer = NSClassFromString(@"RTCCameraVideoCapturer");
-    if (rtcCameraCapturer) {
-        NSLog(@"[TelegramCallTweak] Hooking RTCCameraVideoCapturer...");
+    // Hook VideoCameraCapturer
+    Class videoCameraCapturer = NSClassFromString(@"VideoCameraCapturer");
+    if (videoCameraCapturer) {
+        NSLog(@"[TelegramCallTweak] Hooking VideoCameraCapturer...");
         SEL captureSelector = NSSelectorFromString(@"captureOutput:didOutputSampleBuffer:fromConnection:");
-        if (class_getInstanceMethod(rtcCameraCapturer, captureSelector)) {
-            // Inject swizzled method dynamically
-            Method swizzledMethod = class_getInstanceMethod([RTCCameraVideoCapturerHook class], @selector(swizzled_captureOutput:didOutputSampleBuffer:fromConnection:));
-            BOOL added = class_addMethod(rtcCameraCapturer,
+        if (class_getInstanceMethod(videoCameraCapturer, captureSelector)) {
+            Method swizzledMethod = class_getInstanceMethod([VideoCameraCapturerHook class], @selector(swizzled_captureOutput:didOutputSampleBuffer:fromConnection:));
+            BOOL added = class_addMethod(videoCameraCapturer,
                                          NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"),
                                          method_getImplementation(swizzledMethod),
                                          method_getTypeEncoding(swizzledMethod));
             if (added) {
-                swizzle(rtcCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
+                swizzle(videoCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
             }
         }
     }
