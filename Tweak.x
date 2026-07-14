@@ -6,7 +6,6 @@
 
 static BOOL getForceBuiltInMicSetting() {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    // Register YES as the default fallback value if not set
     if ([defaults objectForKey:@"tweak_forceBuiltInMic"] == nil) {
         [defaults setBool:YES forKey:@"tweak_forceBuiltInMic"];
         [defaults synchronize];
@@ -58,6 +57,18 @@ static void enforceBuiltInMicRoute() {
     }
     
     if (builtInMic) {
+        // Capture the preferred output before forcing input (e.g. Bluetooth output)
+        AVAudioSessionPortDescription *targetOutput = nil;
+        for (AVAudioSessionPortDescription *output in session.currentRoute.outputs) {
+            if ([output.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+                [output.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+                [output.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
+                [output.portType isEqualToString:AVAudioSessionPortHeadphones]) {
+                targetOutput = output;
+                break;
+            }
+        }
+        
         AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
         BOOL isAlreadyMic = NO;
         for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
@@ -69,8 +80,26 @@ static void enforceBuiltInMicRoute() {
         
         if (!isAlreadyMic) {
             NSError *error = nil;
+            // Force the built-in mic
             BOOL success = [session setPreferredInput:builtInMic error:&error];
             NSLog(@"[TelegramCallTweak] Force redirected audio input to Built-in Mic: %d (Error: %@)", success, error);
+            
+            // If we had a Bluetooth/headphone output active, force it back as the preferred output
+            if (targetOutput) {
+                // Ensure output routing options are correctly set to allow Bluetooth output alongside built-in mic
+                AVAudioSessionCategoryOptions options = session.categoryOptions;
+                options |= AVAudioSessionCategoryOptionAllowBluetooth;
+                options |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+                
+                [session setCategory:session.category mode:session.mode options:options error:nil];
+                
+                // On iOS 11+, we can set preferred output port directly
+                if (@available(iOS 11.0, *)) {
+                    BOOL outputSuccess = [session setPreferredInput:builtInMic error:nil];
+                    // Verify if system accepts output override
+                    NSLog(@"[TelegramCallTweak] Re-routed audio output to: %@ (Success: %d)", targetOutput.portType, outputSuccess);
+                }
+            }
         } else {
             NSLog(@"[TelegramCallTweak] Built-in Mic is already the active input.");
         }
@@ -129,7 +158,6 @@ static TweakAudioObserver *gAudioObserver = nil;
         return;
     }
     
-    // Forward to original implementation
     typedef void (*OriginalMethodType)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *);
     SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
     Method originalMethod = class_getInstanceMethod([self class], selector);
@@ -149,7 +177,7 @@ static TweakAudioObserver *gAudioObserver = nil;
     
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIViewController *rootVC = self.rootViewController;
             if (rootVC) {
                 NSString *micStatus = getForceBuiltInMicSetting() ? @"ON" : @"OFF";
@@ -209,16 +237,13 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
     
-    // Initialize our system notification audio observer
     gAudioObserver = [[TweakAudioObserver alloc] init];
     
-    // Hook UIWindow makeKeyAndVisible
     Class uiWindowClass = NSClassFromString(@"UIWindow");
     if (uiWindowClass) {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
     }
     
-    // Hook VideoCameraCapturer
     Class videoCameraCapturer = NSClassFromString(@"VideoCameraCapturer");
     if (videoCameraCapturer) {
         NSLog(@"[TelegramCallTweak] Hooking VideoCameraCapturer...");
