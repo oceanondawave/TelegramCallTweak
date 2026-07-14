@@ -2,7 +2,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Helper storage for custom call settings reading directly from Swiftgram's App Group ---
+// --- Helper storage for custom settings from Swiftgram's App Group ---
 
 static NSUserDefaults *getSwiftgramGroupDefaults() {
     NSString *baseBundleId = [[NSBundle mainBundle] bundleIdentifier];
@@ -13,27 +13,150 @@ static NSUserDefaults *getSwiftgramGroupDefaults() {
         }
     }
     NSString *groupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
-    NSLog(@"[TelegramCallTweak] Resolved App Group Name: %@", groupName);
     return [[NSUserDefaults alloc] initWithSuiteName:groupName];
 }
 
 static BOOL getForceBuiltInMicSetting() {
-    NSUserDefaults *defaults = getSwiftgramGroupDefaults();
-    BOOL val = [defaults boolForKey:@"forceBuiltInMic"];
-    // Also print out the entire settings keys for debugging
-    NSLog(@"[TelegramCallTweak] Reading 'forceBuiltInMic' value: %d", val);
+    BOOL val = [getSwiftgramGroupDefaults() boolForKey:@"forceBuiltInMic"];
+    NSLog(@"[TelegramCallTweak] Reading 'forceBuiltInMic' setting value: %d", val);
     return val;
 }
 
 static BOOL getShareAudioOnlySetting() {
-    NSUserDefaults *defaults = getSwiftgramGroupDefaults();
-    BOOL val = [defaults boolForKey:@"shareAudioOnly"];
-    NSLog(@"[TelegramCallTweak] Reading 'shareAudioOnly' value: %d", val);
+    BOOL val = [getSwiftgramGroupDefaults() boolForKey:@"shareAudioOnly"];
+    NSLog(@"[TelegramCallTweak] Reading 'shareAudioOnly' setting value: %d", val);
     return val;
 }
 
-// --- Dynamic Swizzling Implementation (TrollStore / Sideload Friendly) ---
+// --- Dynamic Route Enforcer (Direct Notification Listener) ---
 
+static void enforceBuiltInMicRoute() {
+    if (!getForceBuiltInMicSetting()) {
+        return;
+    }
+    
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    NSLog(@"[TelegramCallTweak] Enforcing Built-in Mic. Available inputs: %@", session.availableInputs);
+    
+    AVAudioSessionPortDescription *builtInMic = nil;
+    for (AVAudioSessionPortDescription *port in session.availableInputs) {
+        if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+            builtInMic = port;
+            break;
+        }
+    }
+    
+    if (builtInMic) {
+        // Only set it if it's not already the active input
+        AVAudioSessionRouteDescription *currentRoute = session.currentRoute;
+        BOOL isAlreadyMic = NO;
+        for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
+            if ([input.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                isAlreadyMic = YES;
+                break;
+            }
+        }
+        
+        if (!isAlreadyMic) {
+            NSError *error = nil;
+            BOOL success = [session setPreferredInput:builtInMic error:&error];
+            NSLog(@"[TelegramCallTweak] Force redirected audio input to Built-in Mic: %d (Error: %@)", success, error);
+        } else {
+            NSLog(@"[TelegramCallTweak] Built-in Mic is already the active input.");
+        }
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: Built-in Mic port description was not found in available inputs.");
+    }
+}
+
+// --- Notification Observer Class ---
+@interface TweakAudioObserver : NSObject
+@end
+@implementation TweakAudioObserver
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        // Observe system audio route changes
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(audioRouteChanged:)
+                                                     name:AVAudioSessionRouteChangeNotification
+                                                   object:nil];
+        
+        // Also enforce whenever the app goes to foreground or joins calls
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(appDidBecomeActive:)
+                                                     name:UIApplicationDidBecomeActiveNotification
+                                                   object:nil];
+    }
+    return self;
+}
+
+- (void)audioRouteChanged:(NSNotification *)notification {
+    NSLog(@"[TelegramCallTweak] System audio route changed: %@", notification.userInfo);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        enforceBuiltInMicRoute();
+    });
+}
+
+- (void)appDidBecomeActive:(NSNotification *)notification {
+    NSLog(@"[TelegramCallTweak] App became active. Checking mic routing...");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        enforceBuiltInMicRoute();
+    });
+}
+
+@end
+
+static TweakAudioObserver *gAudioObserver = nil;
+
+// --- Swizzled Methods ---
+
+// 1. Hook VideoCameraCapturer to drop outgoing frames when Share Audio Only is enabled
+@interface VideoCameraCapturerHook : NSObject
+@end
+@implementation VideoCameraCapturerHook
+- (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    if (getShareAudioOnlySetting()) {
+        NSLog(@"[TelegramCallTweak] Share Audio Only is ON. Dropping video frame buffer.");
+        return;
+    }
+    
+    // Forward to original implementation
+    typedef void (*OriginalMethodType)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *);
+    SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
+    Method originalMethod = class_getInstanceMethod([self class], selector);
+    if (originalMethod) {
+        OriginalMethodType imp = (OriginalMethodType)method_getImplementation(originalMethod);
+        imp(self, selector, captureOutput, sampleBuffer, connection);
+    }
+}
+@end
+
+// 2. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
+@interface UIWindow (TweakHook)
+@end
+@implementation UIWindow (TweakHook)
+- (void)swizzled_makeKeyAndVisible {
+    [self swizzled_makeKeyAndVisible];
+    
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIViewController *rootVC = self.rootViewController;
+            if (rootVC) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
+                                                                               message:@"TelegramCallTweak has loaded successfully!"
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [rootVC presentViewController:alert animated:YES completion:nil];
+            }
+        });
+    });
+}
+@end
+
+// --- Dynamic Swizzling Helper ---
 static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     Method originalMethod = class_getInstanceMethod(class, originalSelector);
     Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
@@ -57,89 +180,17 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     }
 }
 
-// --- Swizzled Methods ---
-
-// 1. Hook public AVAudioSession to intercept and force Built-in Mic
-@interface AVAudioSession (TweakHook)
-@end
-@implementation AVAudioSession (TweakHook)
-- (BOOL)swizzled_setPreferredInput:(AVAudioSessionPortDescription *)inPort error:(NSError **)outError {
-    NSLog(@"[TelegramCallTweak] setPreferredInput called with port: %@", inPort.portType);
-    if (getForceBuiltInMicSetting()) {
-        AVAudioSessionPortDescription *builtInMic = nil;
-        for (AVAudioSessionPortDescription *port in self.availableInputs) {
-            if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
-                builtInMic = port;
-                break;
-            }
-        }
-        if (builtInMic) {
-            NSLog(@"[TelegramCallTweak] Force Device Mic is ON. Redirecting setPreferredInput from %@ to Built-in Mic", inPort.portType);
-            return [self swizzled_setPreferredInput:builtInMic error:outError];
-        }
-    }
-    return [self swizzled_setPreferredInput:inPort error:outError];
-}
-@end
-
-// 2. Hook VideoCameraCapturer to drop outgoing frames when Share Audio Only is enabled
-@interface VideoCameraCapturerHook : NSObject
-@end
-@implementation VideoCameraCapturerHook
-- (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    if (getShareAudioOnlySetting()) {
-        NSLog(@"[TelegramCallTweak] Share Audio Only is ON. Dropping video frame buffer.");
-        return;
-    }
-    // Forward to original implementation
-    typedef void (*OriginalMethodType)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *);
-    SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
-    Method originalMethod = class_getInstanceMethod([self class], selector);
-    if (originalMethod) {
-        OriginalMethodType imp = (OriginalMethodType)method_getImplementation(originalMethod);
-        imp(self, selector, captureOutput, sampleBuffer, connection);
-    }
-}
-@end
-
-// 3. Hook UIWindow makeKeyAndVisible to show launch confirmation popup
-@interface UIWindow (TweakHook)
-@end
-@implementation UIWindow (TweakHook)
-- (void)swizzled_makeKeyAndVisible {
-    [self swizzled_makeKeyAndVisible];
-    
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIViewController *rootVC = self.rootViewController;
-            if (rootVC) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Tweak Injected"
-                                                                               message:@"TelegramCallTweak has loaded successfully!"
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                [rootVC presentViewController:alert animated:YES completion:nil];
-            }
-        });
-    });
-}
-@end
-
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
+    
+    // Initialize our system notification audio observer
+    gAudioObserver = [[TweakAudioObserver alloc] init];
     
     // Hook UIWindow makeKeyAndVisible
     Class uiWindowClass = NSClassFromString(@"UIWindow");
     if (uiWindowClass) {
         swizzle(uiWindowClass, @selector(makeKeyAndVisible), @selector(swizzled_makeKeyAndVisible));
-    }
-    
-    // Hook system AVAudioSession input routing
-    Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
-    if (avAudioSessionClass) {
-        NSLog(@"[TelegramCallTweak] Hooking AVAudioSession...");
-        swizzle(avAudioSessionClass, @selector(setPreferredInput:error:), @selector(swizzled_setPreferredInput:error:));
     }
     
     // Hook VideoCameraCapturer
