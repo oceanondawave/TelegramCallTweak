@@ -3,31 +3,16 @@
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 
-// --- Diagnostic Helper to Print All Matching Classes ---
-
-static void printAllCapturerClasses() {
-    int numClasses = objc_getClassList(NULL, 0);
-    if (numClasses > 0) {
-        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
-        numClasses = objc_getClassList(classes, numClasses);
-        for (int i = 0; i < numClasses; i++) {
-            const char *name = class_getName(classes[i]);
-            if (name && (strstr(name, "Capturer") != NULL || strstr(name, "ContextVideo") != NULL)) {
-                NSLog(@"[TelegramCallTweak] Found Runtime Class: %s", name);
-            }
-        }
-        free(classes);
-    }
-}
-
 // --- File-Based Shared Preferences Manager ---
 
 static NSString *getSharedPrefsFilePath() {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
     
+    // Resolve base app bundle ID dynamically by removing any extension suffix
     NSString *baseBundleId = bundleId;
     NSArray *parts = [bundleId componentsSeparatedByString:@"."];
     if (parts.count > 3) {
+        // e.g. "app.swiftgram.ios.BroadcastUpload" -> "app.swiftgram.ios"
         NSMutableArray *subparts = [parts mutableCopy];
         [subparts removeLastObject];
         baseBundleId = [subparts componentsJoinedByString:@"."];
@@ -232,15 +217,19 @@ static TweakAudioObserver *gAudioObserver = nil;
 
 @implementation OngoingCallThreadLocalContextVideoCapturerHook
 
-static void (*gOriginalSubmitPixelBuffer)(id, SEL, CVPixelBufferRef, NSInteger) = NULL;
+static void (*gOriginalSubmitSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger, id) = NULL;
 
-- (void)swizzled_submitPixelBuffer:(CVPixelBufferRef)pixelBuffer rotation:(NSInteger)rotation {
+- (void)swizzled_submitSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
     if (getShareAudioOnlySetting()) {
+        if (completion) {
+            void (^completionBlock)(void) = completion;
+            completionBlock();
+        }
         return; // Drops screen sharing and camera video frames at the WebRTC engine layer
     }
     
-    if (gOriginalSubmitPixelBuffer) {
-        gOriginalSubmitPixelBuffer(self, @selector(submitPixelBuffer:rotation:), pixelBuffer, rotation);
+    if (gOriginalSubmitSampleBuffer) {
+        gOriginalSubmitSampleBuffer(self, @selector(submitSampleBuffer:rotation:completion:), sampleBuffer, rotation, completion);
     }
 }
 @end
@@ -326,12 +315,12 @@ static void image_added(const struct mach_header *mh, intptr_t vmaddr_slide) {
     
     Class videoCapturerClass = NSClassFromString(@"OngoingCallThreadLocalContextVideoCapturer");
     if (videoCapturerClass) {
-        SEL submitSelector = NSSelectorFromString(@"submitPixelBuffer:rotation:");
+        SEL submitSelector = NSSelectorFromString(@"submitSampleBuffer:rotation:completion:");
         Method originalMethod = class_getInstanceMethod(videoCapturerClass, submitSelector);
         if (originalMethod) {
-            gOriginalSubmitPixelBuffer = (void (*)(id, SEL, CVPixelBufferRef, NSInteger))method_getImplementation(originalMethod);
+            gOriginalSubmitSampleBuffer = (void (*)(id, SEL, CMSampleBufferRef, NSInteger, id))method_getImplementation(originalMethod);
             
-            Method swizzledMethod = class_getInstanceMethod([OngoingCallThreadLocalContextVideoCapturerHook class], @selector(swizzled_submitPixelBuffer:rotation:));
+            Method swizzledMethod = class_getInstanceMethod([OngoingCallThreadLocalContextVideoCapturerHook class], @selector(swizzled_submitSampleBuffer:rotation:completion:));
             class_replaceMethod(videoCapturerClass,
                                 submitSelector,
                                 method_getImplementation(swizzledMethod),
@@ -362,9 +351,6 @@ __attribute__((constructor)) static void initTweak() {
     
     // Register dyld image callback to dynamically swizzle OngoingCallThreadLocalContextVideoCapturer when its framework is loaded
     _dyld_register_func_for_add_image(image_added);
-    
-    // Print all runtime classes matching capturer/video keyword to identify available targets
-    printAllCapturerClasses();
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
 }
