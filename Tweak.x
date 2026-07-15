@@ -3,16 +3,31 @@
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 
+// --- Diagnostic Helper to Print All Matching Classes ---
+
+static void printAllCapturerClasses() {
+    int numClasses = objc_getClassList(NULL, 0);
+    if (numClasses > 0) {
+        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+        numClasses = objc_getClassList(classes, numClasses);
+        for (int i = 0; i < numClasses; i++) {
+            const char *name = class_getName(classes[i]);
+            if (name && (strstr(name, "Capturer") != NULL || strstr(name, "ContextVideo") != NULL)) {
+                NSLog(@"[TelegramCallTweak] Found Runtime Class: %s", name);
+            }
+        }
+        free(classes);
+    }
+}
+
 // --- File-Based Shared Preferences Manager ---
 
 static NSString *getSharedPrefsFilePath() {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
     
-    // Resolve base app bundle ID dynamically by removing any extension suffix
     NSString *baseBundleId = bundleId;
     NSArray *parts = [bundleId componentsSeparatedByString:@"."];
     if (parts.count > 3) {
-        // e.g. "app.swiftgram.ios.BroadcastUpload" -> "app.swiftgram.ios"
         NSMutableArray *subparts = [parts mutableCopy];
         [subparts removeLastObject];
         baseBundleId = [subparts componentsJoinedByString:@"."];
@@ -347,6 +362,9 @@ __attribute__((constructor)) static void initTweak() {
     
     // Register dyld image callback to dynamically swizzle OngoingCallThreadLocalContextVideoCapturer when its framework is loaded
     _dyld_register_func_for_add_image(image_added);
+    
+    // Print all runtime classes matching capturer/video keyword to identify available targets
+    printAllCapturerClasses();
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
 }
