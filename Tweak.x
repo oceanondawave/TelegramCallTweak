@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
-#import <ReplayKit/ReplayKit.h>
 #import <objc/runtime.h>
 
 // --- Helper storage for custom settings locally inside standard UserDefaults ---
@@ -230,131 +229,6 @@ static TweakAudioObserver *gAudioObserver = nil;
 }
 @end
 
-// --- CallController ViewDidLoad Injection to hook Swift Actions ---
-
-@interface CallControllerHook : UIViewController
-@end
-
-@implementation CallControllerHook
-
-static void (*gOriginalCallControllerViewDidLoad)(id, SEL) = NULL;
-
-- (void)swizzled_viewDidLoad {
-    if (gOriginalCallControllerViewDidLoad) {
-        gOriginalCallControllerViewDidLoad(self, @selector(viewDidLoad));
-    }
-    
-    NSLog(@"[TelegramCallTweak] CallController viewDidLoad intercepted. Injecting videoAction...");
-    
-    // Safely retrieve displayNode (CallControllerNodeV2)
-    id displayNode = nil;
-    @try {
-        displayNode = [self valueForKey:@"displayNode"];
-    } @catch (NSException *exception) {
-        NSLog(@"[TelegramCallTweak] Error fetching displayNode: %@", exception.reason);
-    }
-    
-    if (!displayNode) {
-        return;
-    }
-    
-    // Safely retrieve callScreen (PrivateCallScreen)
-    id callScreen = nil;
-    @try {
-        callScreen = [displayNode valueForKey:@"callScreen"];
-    } @catch (NSException *exception) {
-        NSLog(@"[TelegramCallTweak] Error fetching callScreen: %@", exception.reason);
-    }
-    
-    if (!callScreen) {
-        return;
-    }
-    
-    // Safely retrieve the original Swift videoAction closure block
-    __block id originalAction = nil;
-    @try {
-        originalAction = [callScreen valueForKey:@"videoAction"];
-    } @catch (NSException *exception) {
-        NSLog(@"[TelegramCallTweak] Error fetching original videoAction: %@", exception.reason);
-    }
-    
-    // Wrap the original Swift closure action with our selector menu
-    __weak id weakSelf = self;
-    __weak id weakCallScreen = callScreen;
-    id customVideoActionBlock = ^() {
-        id strongSelf = weakSelf;
-        id strongCallScreen = weakCallScreen;
-        if (!strongSelf || !strongCallScreen) {
-            return;
-        }
-        
-        id call = nil;
-        @try {
-            call = [strongSelf valueForKey:@"call"];
-        } @catch (NSException *exception) {}
-        
-        if (!call) {
-            if (originalAction) {
-                void (^originalBlock)(void) = originalAction;
-                originalBlock();
-            }
-            return;
-        }
-        
-        BOOL hasScreencast = NO;
-        @try {
-            hasScreencast = [[call valueForKey:@"hasScreencast"] boolValue];
-        } @catch (NSException *exception) {}
-        
-        if (hasScreencast) {
-            [call performSelector:@selector(disableScreencast)];
-        } else {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Video Source"
-                                                                           message:nil
-                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            [alert addAction:[UIAlertAction actionWithTitle:@"Use Camera" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
-                if (originalAction) {
-                    void (^originalBlock)(void) = originalAction;
-                    originalBlock();
-                }
-            }]];
-            
-            [alert addAction:[UIAlertAction actionWithTitle:@"Share Screen & Audio" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
-                if (@available(iOS 12.0, *)) {
-                    RPSystemBroadcastPickerView *picker = [[RPSystemBroadcastPickerView alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
-                    picker.showsMicrophoneButton = NO;
-                    
-                    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
-                    picker.preferredExtension = [NSString stringWithFormat:@"%@.BroadcastUpload", bundleId];
-                    
-                    // Trigger picker overlay dynamically
-                    for (UIView *subview in picker.subviews) {
-                        if ([subview isKindOfClass:[UIButton class]]) {
-                            UIButton *button = (UIButton *)subview;
-                            [button sendActionsForControlEvents:UIControlEventTouchUpInside];
-                            break;
-                        }
-                    }
-                }
-            }]];
-            
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            
-            [strongSelf presentViewController:alert animated:YES completion:nil];
-        }
-    };
-    
-    // Set our wrapped block onto callScreen
-    @try {
-        [callScreen setValue:customVideoActionBlock forKey:@"videoAction"];
-        NSLog(@"[TelegramCallTweak] Successfully injected custom videoAction block.");
-    } @catch (NSException *exception) {
-        NSLog(@"[TelegramCallTweak] Error setting custom videoAction: %@", exception.reason);
-    }
-}
-@end
-
 // --- Dynamic Swizzling Helper ---
 static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     Method originalMethod = class_getInstanceMethod(class, originalSelector);
@@ -377,25 +251,6 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     } else {
         method_exchangeImplementations(originalMethod, swizzledMethod);
     }
-}
-
-// --- Dynamic Class Resolver Helper ---
-static Class findCallControllerClass() {
-    int numClasses = objc_getClassList(NULL, 0);
-    if (numClasses > 0) {
-        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
-        numClasses = objc_getClassList(classes, numClasses);
-        for (int i = 0; i < numClasses; i++) {
-            const char *name = class_getName(classes[i]);
-            if (name && strstr(name, "CallController") != NULL && strstr(name, "Node") == NULL && strstr(name, "Hook") == NULL) {
-                Class found = classes[i];
-                free(classes);
-                return found;
-            }
-        }
-        free(classes);
-    }
-    return nil;
 }
 
 // --- Tweak Entry Point ---
@@ -430,26 +285,6 @@ __attribute__((constructor)) static void initTweak() {
                 swizzle(videoCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
             }
         }
-    }
-    
-    // Dynamically resolve Swift mangled class for CallController and swizzle viewDidLoad
-    Class callControllerClass = findCallControllerClass();
-    if (callControllerClass) {
-        NSLog(@"[TelegramCallTweak] Found CallController class: %s", class_getName(callControllerClass));
-        SEL viewDidLoadSelector = @selector(viewDidLoad);
-        Method originalMethod = class_getInstanceMethod(callControllerClass, viewDidLoadSelector);
-        if (originalMethod) {
-            gOriginalCallControllerViewDidLoad = (void (*)(id, SEL))method_getImplementation(originalMethod);
-            
-            Method swizzledMethod = class_getInstanceMethod([CallControllerHook class], @selector(swizzled_viewDidLoad));
-            class_replaceMethod(callControllerClass,
-                                viewDidLoadSelector,
-                                method_getImplementation(swizzledMethod),
-                                method_getTypeEncoding(swizzledMethod));
-            NSLog(@"[TelegramCallTweak] Hooked CallController viewDidLoad successfully.");
-        }
-    } else {
-        NSLog(@"[TelegramCallTweak] Warning: CallController class was not found in Objective-C runtime.");
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
