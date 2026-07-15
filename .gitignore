@@ -1,0 +1,12 @@
+# Theos build artifacts
+.theos/
+obj/
+packages/
+
+# Compiled binaries
+*.dylib
+*.deb
+*.dsym
+
+# macOS
+.DS_Store
