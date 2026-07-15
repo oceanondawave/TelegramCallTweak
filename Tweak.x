@@ -211,7 +211,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 static TweakAudioObserver *gAudioObserver = nil;
 
-// --- Helper pixel buffer clearing routine (with Alpha Opaque support) ---
+// --- Helper pixel buffer clearing routine (with fast memset_pattern4 and Alpha Opaque support) ---
 
 static void clearPixelBufferToBlack(CVPixelBufferRef pixelBuffer) {
     if (!pixelBuffer) {
@@ -240,19 +240,14 @@ static void clearPixelBufferToBlack(CVPixelBufferRef pixelBuffer) {
         }
     } else {
         // Single Planar (RGB/BGRA)
-        uint32_t *dest = (uint32_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+        void *dest = CVPixelBufferGetBaseAddress(pixelBuffer);
         size_t height = CVPixelBufferGetHeight(pixelBuffer);
-        size_t width = CVPixelBufferGetWidth(pixelBuffer);
         size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
         
         if (dest) {
-            size_t pixelsPerRow = bytesPerRow / 4;
-            for (size_t y = 0; y < height; y++) {
-                for (size_t x = 0; x < width; x++) {
-                    // Set to solid black with opaque alpha (BGRA: B=0, G=0, R=0, A=255 -> 0xFF000000)
-                    dest[y * pixelsPerRow + x] = 0xFF000000;
-                }
-            }
+            // Highly optimized hardware clearance that maintains alpha opacity (255)
+            uint32_t blackPattern = 0xFF000000;
+            memset_pattern4(dest, &blackPattern, bytesPerRow * height);
         }
     }
     
@@ -275,9 +270,15 @@ static void (*gOriginalSubmitSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
 
 - (void)swizzled_submitSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
     if (getShareAudioOnlySetting() && sampleBuffer) {
-        CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (pixelBuffer) {
-            clearPixelBufferToBlack(pixelBuffer);
+        CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (format) {
+            CMMediaType mediaType = CMFormatDescriptionGetMediaType(format);
+            if (mediaType == kCMMediaType_Video) {
+                CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                if (pixelBuffer) {
+                    clearPixelBufferToBlack(pixelBuffer);
+                }
+            }
         }
     }
     
