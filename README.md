@@ -28,7 +28,7 @@ Both are applied in real time — no need to restart the call.
 | Swiftgram (iOS) | ✅ Tested |
 | Telegram (iOS) | ✅ Should work (same codebase) |
 
-> Requires a jailbroken device (Dopamine, palera1n, etc.) or TrollStore for dylib injection.
+> Requires a jailbroken device (Dopamine, palera1n, etc.) or TrollFools for dylib injection.
 
 ---
 
