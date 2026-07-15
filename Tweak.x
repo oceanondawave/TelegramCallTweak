@@ -2,10 +2,24 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Helper storage for custom settings locally inside standard UserDefaults ---
+// --- Dynamic Shared App Group suite resolver ---
+
+static NSString *getAppGroupSuiteName() {
+    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bundleId hasSuffix:@".BroadcastUpload"]) {
+        bundleId = [bundleId substringToIndex:(bundleId.length - @".BroadcastUpload".length)];
+    }
+    return [NSString stringWithFormat:@"group.%@", bundleId];
+}
+
+static NSUserDefaults *getSharedDefaults() {
+    return [[NSUserDefaults alloc] initWithSuiteName:getAppGroupSuiteName()];
+}
+
+// --- Helper storage for custom settings locally inside Shared App Group Suite ---
 
 static BOOL getForceBuiltInMicSetting() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getSharedDefaults();
     if ([defaults objectForKey:@"tweak_forceBuiltInMic"] == nil) {
         [defaults setBool:YES forKey:@"tweak_forceBuiltInMic"];
         [defaults synchronize];
@@ -14,13 +28,13 @@ static BOOL getForceBuiltInMicSetting() {
 }
 
 static void setForceBuiltInMicSetting(BOOL value) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getSharedDefaults();
     [defaults setBool:value forKey:@"tweak_forceBuiltInMic"];
     [defaults synchronize];
 }
 
 static BOOL getShareAudioOnlySetting() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getSharedDefaults();
     if ([defaults objectForKey:@"tweak_shareAudioOnly"] == nil) {
         [defaults setBool:YES forKey:@"tweak_shareAudioOnly"];
         [defaults synchronize];
@@ -29,7 +43,7 @@ static BOOL getShareAudioOnlySetting() {
 }
 
 static void setShareAudioOnlySetting(BOOL value) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = getSharedDefaults();
     [defaults setBool:value forKey:@"tweak_shareAudioOnly"];
     [defaults synchronize];
 }
@@ -219,6 +233,12 @@ static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
 - (void)swizzled_makeKeyAndVisible {
     [self swizzled_makeKeyAndVisible];
     
+    // We only present preferences config alerts inside the main application process.
+    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bundleId hasSuffix:@".BroadcastUpload"]) {
+         return;
+    }
+    
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -228,7 +248,7 @@ static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
                 NSString *audioOnlyStatus = getShareAudioOnlySetting() ? @"ON" : @"OFF";
                 
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Telegram Call Tweak"
-                                                                               message:@"Configure Tweak Preferences (saved locally)"
+                                                                               message:@"Configure Tweak Preferences (saved in App Group)"
                                                                         preferredStyle:UIAlertControllerStyleAlert];
                 
                 [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Force Built-in Mic (%@)", micStatus]
