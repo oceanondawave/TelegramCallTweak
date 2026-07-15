@@ -1,8 +1,9 @@
 Package: ph.telegra.telegramcalltweak
 Name: TelegramCallTweak
 Depends: mobilesubstrate
-Version: 1.0.0
+Version: 1.1.0
 Architecture: iphoneos-arm
-Description: Custom call enhancements (Screen sharing & Microphone routing)
+Description: Force built-in mic, audio-only screen share, and real-time volume control for Telegram/Swiftgram calls
 Author: oceanondawave
+Maintainer: oceanondawave <https://github.com/oceanondawave>
 Section: Tweaks
