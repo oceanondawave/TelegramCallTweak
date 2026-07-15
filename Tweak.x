@@ -6,18 +6,28 @@
 
 static NSString *getSharedPrefsFilePath() {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleId hasSuffix:@".BroadcastUpload"]) {
-        bundleId = [bundleId substringToIndex:(bundleId.length - @".BroadcastUpload".length)];
-    }
+    NSLog(@"[TelegramCallTweak] Current process bundle ID: %@", bundleId);
     
-    NSString *appGroupName = [NSString stringWithFormat:@"group.%@", bundleId];
+    // Resolve base app bundle ID dynamically by removing any extension suffix
+    NSString *baseBundleId = bundleId;
+    NSArray *parts = [bundleId componentsSeparatedByString:@"."];
+    if (parts.count > 3) {
+        // e.g. "app.swiftgram.ios.BroadcastUpload" -> "app.swiftgram.ios"
+        NSMutableArray *subparts = [parts mutableCopy];
+        [subparts removeLastObject];
+        baseBundleId = [subparts componentsJoinedByString:@"."];
+    }
+    NSLog(@"[TelegramCallTweak] Resolved base bundle ID: %@", baseBundleId);
+    
+    NSString *appGroupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
     NSURL *groupURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroupName];
     if (!groupURL) {
-        // Fallback to Documents if App Group is unavailable
+        NSLog(@"[TelegramCallTweak] Warning: App Group Container Group URL is nil for identifier: %@", appGroupName);
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         return [docs stringByAppendingPathComponent:@"tweak_preferences.plist"];
     }
     
+    NSLog(@"[TelegramCallTweak] Resolved App Group Container path: %@", groupURL.path);
     NSString *dataDirectory = [groupURL.path stringByAppendingPathComponent:@"telegram-data"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dataDirectory withIntermediateDirectories:YES attributes:nil error:nil];
     
@@ -26,11 +36,15 @@ static NSString *getSharedPrefsFilePath() {
 
 static BOOL readTweakSetting(NSString *key, BOOL defaultValue) {
     @try {
-        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:getSharedPrefsFilePath()];
+        NSString *path = getSharedPrefsFilePath();
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (!dict || [dict objectForKey:key] == nil) {
+            NSLog(@"[TelegramCallTweak] Reading setting %@: default %d", key, defaultValue);
             return defaultValue;
         }
-        return [[dict objectForKey:key] boolValue];
+        BOOL val = [[dict objectForKey:key] boolValue];
+        NSLog(@"[TelegramCallTweak] Reading setting %@ from path %@: %d", key, path, val);
+        return val;
     } @catch (NSException *exception) {
         return defaultValue;
     }
@@ -38,13 +52,14 @@ static BOOL readTweakSetting(NSString *key, BOOL defaultValue) {
 
 static void writeTweakSetting(NSString *key, BOOL value) {
     @try {
-        NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithContentsOfFile:getSharedPrefsFilePath()];
+        NSString *path = getSharedPrefsFilePath();
+        NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithContentsOfFile:path];
         if (!dict) {
             dict = [NSMutableDictionary dictionary];
         }
         [dict setObject:@(value) forKey:key];
-        BOOL success = [dict writeToFile:getSharedPrefsFilePath() atomically:YES];
-        NSLog(@"[TelegramCallTweak] Saved setting %@ to %d (Success: %d) at: %@", key, value, success, getSharedPrefsFilePath());
+        BOOL success = [dict writeToFile:path atomically:YES];
+        NSLog(@"[TelegramCallTweak] Saved setting %@ to %d (Success: %d) at: %@", key, value, success, path);
     } @catch (NSException *exception) {
         NSLog(@"[TelegramCallTweak] Exception saving setting: %@", exception.reason);
     }
@@ -213,6 +228,7 @@ static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
 
 - (void)swizzled_injectSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
     if (getShareAudioOnlySetting()) {
+        NSLog(@"[TelegramCallTweak] Share Audio Only option is active. Dropping frame buffer inside OngoingCallVideoCapturer.");
         if (completion) {
             void (^completionBlock)(void) = completion;
             completionBlock();
@@ -233,6 +249,7 @@ static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
 @implementation VideoCameraCapturerHook
 - (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (getShareAudioOnlySetting()) {
+        NSLog(@"[TelegramCallTweak] Share Audio Only option is active. Dropping frame buffer inside VideoCameraCapturer.");
         return;
     }
     
