@@ -168,6 +168,30 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 static TweakAudioObserver *gAudioObserver = nil;
 
+// --- OngoingCallVideoCapturer Frame Blocker Hook ---
+
+@interface OngoingCallVideoCapturerHook : NSObject
+@end
+
+@implementation OngoingCallVideoCapturerHook
+
+static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger, id) = NULL;
+
+- (void)swizzled_injectSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
+    if (getShareAudioOnlySetting()) {
+        if (completion) {
+            void (^completionBlock)(void) = completion;
+            completionBlock();
+        }
+        return; // Drops screen sharing and camera video frames
+    }
+    
+    if (gOriginalInjectSampleBuffer) {
+        gOriginalInjectSampleBuffer(self, @selector(injectSampleBuffer:rotation:completion:), sampleBuffer, rotation, completion);
+    }
+}
+@end
+
 // --- Swizzled Video/Camera Methods ---
 
 @interface VideoCameraCapturerHook : NSObject
@@ -253,6 +277,25 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     }
 }
 
+// --- Dynamic Class Resolver Helper ---
+static Class findOngoingCallVideoCapturerClass() {
+    int numClasses = objc_getClassList(NULL, 0);
+    if (numClasses > 0) {
+        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+        numClasses = objc_getClassList(classes, numClasses);
+        for (int i = 0; i < numClasses; i++) {
+            const char *name = class_getName(classes[i]);
+            if (name && strstr(name, "OngoingCallVideoCapturer") != NULL) {
+                Class found = classes[i];
+                free(classes);
+                return found;
+            }
+        }
+        free(classes);
+    }
+    return nil;
+}
+
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
@@ -285,6 +328,26 @@ __attribute__((constructor)) static void initTweak() {
                 swizzle(videoCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
             }
         }
+    }
+    
+    // Hook OngoingCallVideoCapturer's injectSampleBuffer to block screen sharing video frames
+    Class ongoingCallVideoCapturerClass = findOngoingCallVideoCapturerClass();
+    if (ongoingCallVideoCapturerClass) {
+        NSLog(@"[TelegramCallTweak] Found OngoingCallVideoCapturer class: %s", class_getName(ongoingCallVideoCapturerClass));
+        SEL injectSelector = NSSelectorFromString(@"injectSampleBuffer:rotation:completion:");
+        Method originalMethod = class_getInstanceMethod(ongoingCallVideoCapturerClass, injectSelector);
+        if (originalMethod) {
+            gOriginalInjectSampleBuffer = (void (*)(id, SEL, CMSampleBufferRef, NSInteger, id))method_getImplementation(originalMethod);
+            
+            Method swizzledMethod = class_getInstanceMethod([OngoingCallVideoCapturerHook class], @selector(swizzled_injectSampleBuffer:rotation:completion:));
+            class_replaceMethod(ongoingCallVideoCapturerClass,
+                                injectSelector,
+                                method_getImplementation(swizzledMethod),
+                                method_getTypeEncoding(swizzledMethod));
+            NSLog(@"[TelegramCallTweak] Hooked OngoingCallVideoCapturer injectSampleBuffer successfully.");
+        }
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: OngoingCallVideoCapturer class was not found in Objective-C runtime.");
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
