@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <CoreVideo/CoreVideo.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 
@@ -210,6 +211,46 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 static TweakAudioObserver *gAudioObserver = nil;
 
+// --- Helper pixel buffer clearing routine ---
+
+static void clearPixelBufferToBlack(CVPixelBufferRef pixelBuffer) {
+    if (!pixelBuffer) {
+        return;
+    }
+    
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    
+    size_t planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
+    if (planeCount > 0) {
+        // Bi-Planar YUV (NV12)
+        void *yDest = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+        size_t yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0);
+        size_t yBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+        if (yDest) {
+            memset(yDest, 0, yBytesPerRow * yHeight); // Set Y (Luminance) to 0 (black)
+        }
+        
+        if (planeCount > 1) {
+            void *uvDest = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+            size_t uvHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1);
+            size_t uvBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+            if (uvDest) {
+                memset(uvDest, 128, uvBytesPerRow * uvHeight); // Set U/V (Chrominance) to 128 (neutral / black)
+            }
+        }
+    } else {
+        // Single Planar (RGB/BGRA)
+        void *dest = CVPixelBufferGetBaseAddress(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        if (dest) {
+            memset(dest, 0, bytesPerRow * height); // Set RGB to 0 (black)
+        }
+    }
+    
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+}
+
 // --- OngoingCallThreadLocalContextVideoCapturer Frame Blocker Hook ---
 
 @interface OngoingCallThreadLocalContextVideoCapturerHook : NSObject
@@ -220,12 +261,11 @@ static TweakAudioObserver *gAudioObserver = nil;
 static void (*gOriginalSubmitSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger, id) = NULL;
 
 - (void)swizzled_submitSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
-    if (getShareAudioOnlySetting()) {
-        if (completion) {
-            void (^completionBlock)(void) = completion;
-            completionBlock();
+    if (getShareAudioOnlySetting() && sampleBuffer) {
+        CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (pixelBuffer) {
+            clearPixelBufferToBlack(pixelBuffer);
         }
-        return; // Drops screen sharing and camera video frames at the WebRTC engine layer
     }
     
     if (gOriginalSubmitSampleBuffer) {
