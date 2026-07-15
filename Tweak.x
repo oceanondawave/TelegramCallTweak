@@ -2,50 +2,70 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 
-// --- Dynamic Shared App Group suite resolver ---
+// --- File-Based Shared Preferences Manager ---
 
-static NSString *getAppGroupSuiteName() {
+static NSString *getSharedPrefsFilePath() {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
     if ([bundleId hasSuffix:@".BroadcastUpload"]) {
         bundleId = [bundleId substringToIndex:(bundleId.length - @".BroadcastUpload".length)];
     }
-    return [NSString stringWithFormat:@"group.%@", bundleId];
+    
+    NSString *appGroupName = [NSString stringWithFormat:@"group.%@", bundleId];
+    NSURL *groupURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroupName];
+    if (!groupURL) {
+        // Fallback to Documents if App Group is unavailable
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        return [docs stringByAppendingPathComponent:@"tweak_preferences.plist"];
+    }
+    
+    NSString *dataDirectory = [groupURL.path stringByAppendingPathComponent:@"telegram-data"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dataDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    
+    return [dataDirectory stringByAppendingPathComponent:@"tweak_preferences.plist"];
 }
 
-static NSUserDefaults *getSharedDefaults() {
-    return [[NSUserDefaults alloc] initWithSuiteName:getAppGroupSuiteName()];
+static BOOL readTweakSetting(NSString *key, BOOL defaultValue) {
+    @try {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:getSharedPrefsFilePath()];
+        if (!dict || [dict objectForKey:key] == nil) {
+            return defaultValue;
+        }
+        return [[dict objectForKey:key] boolValue];
+    } @catch (NSException *exception) {
+        return defaultValue;
+    }
 }
 
-// --- Helper storage for custom settings locally inside Shared App Group Suite ---
+static void writeTweakSetting(NSString *key, BOOL value) {
+    @try {
+        NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithContentsOfFile:getSharedPrefsFilePath()];
+        if (!dict) {
+            dict = [NSMutableDictionary dictionary];
+        }
+        [dict setObject:@(value) forKey:key];
+        BOOL success = [dict writeToFile:getSharedPrefsFilePath() atomically:YES];
+        NSLog(@"[TelegramCallTweak] Saved setting %@ to %d (Success: %d) at: %@", key, value, success, getSharedPrefsFilePath());
+    } @catch (NSException *exception) {
+        NSLog(@"[TelegramCallTweak] Exception saving setting: %@", exception.reason);
+    }
+}
+
+// --- Helper storage for custom settings locally ---
 
 static BOOL getForceBuiltInMicSetting() {
-    NSUserDefaults *defaults = getSharedDefaults();
-    if ([defaults objectForKey:@"tweak_forceBuiltInMic"] == nil) {
-        [defaults setBool:YES forKey:@"tweak_forceBuiltInMic"];
-        [defaults synchronize];
-    }
-    return [defaults boolForKey:@"tweak_forceBuiltInMic"];
+    return readTweakSetting(@"tweak_forceBuiltInMic", YES);
 }
 
 static void setForceBuiltInMicSetting(BOOL value) {
-    NSUserDefaults *defaults = getSharedDefaults();
-    [defaults setBool:value forKey:@"tweak_forceBuiltInMic"];
-    [defaults synchronize];
+    writeTweakSetting(@"tweak_forceBuiltInMic", value);
 }
 
 static BOOL getShareAudioOnlySetting() {
-    NSUserDefaults *defaults = getSharedDefaults();
-    if ([defaults objectForKey:@"tweak_shareAudioOnly"] == nil) {
-        [defaults setBool:YES forKey:@"tweak_shareAudioOnly"];
-        [defaults synchronize];
-    }
-    return [defaults boolForKey:@"tweak_shareAudioOnly"];
+    return readTweakSetting(@"tweak_shareAudioOnly", YES);
 }
 
 static void setShareAudioOnlySetting(BOOL value) {
-    NSUserDefaults *defaults = getSharedDefaults();
-    [defaults setBool:value forKey:@"tweak_shareAudioOnly"];
-    [defaults synchronize];
+    writeTweakSetting(@"tweak_shareAudioOnly", value);
 }
 
 // --- Helper input routing enforcer ---
@@ -248,7 +268,7 @@ static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger
                 NSString *audioOnlyStatus = getShareAudioOnlySetting() ? @"ON" : @"OFF";
                 
                 UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Telegram Call Tweak"
-                                                                               message:@"Configure Tweak Preferences (saved in App Group)"
+                                                                               message:@"Configure Tweak Preferences (saved in Shared App Path)"
                                                                         preferredStyle:UIAlertControllerStyleAlert];
                 
                 [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Force Built-in Mic (%@)", micStatus]
