@@ -6,7 +6,6 @@
 
 static NSString *getSharedPrefsFilePath() {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
-    NSLog(@"[TelegramCallTweak] Current process bundle ID: %@", bundleId);
     
     // Resolve base app bundle ID dynamically by removing any extension suffix
     NSString *baseBundleId = bundleId;
@@ -17,17 +16,14 @@ static NSString *getSharedPrefsFilePath() {
         [subparts removeLastObject];
         baseBundleId = [subparts componentsJoinedByString:@"."];
     }
-    NSLog(@"[TelegramCallTweak] Resolved base bundle ID: %@", baseBundleId);
     
     NSString *appGroupName = [NSString stringWithFormat:@"group.%@", baseBundleId];
     NSURL *groupURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroupName];
     if (!groupURL) {
-        NSLog(@"[TelegramCallTweak] Warning: App Group Container Group URL is nil for identifier: %@", appGroupName);
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         return [docs stringByAppendingPathComponent:@"tweak_preferences.plist"];
     }
     
-    NSLog(@"[TelegramCallTweak] Resolved App Group Container path: %@", groupURL.path);
     NSString *dataDirectory = [groupURL.path stringByAppendingPathComponent:@"telegram-data"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dataDirectory withIntermediateDirectories:YES attributes:nil error:nil];
     
@@ -39,12 +35,9 @@ static BOOL readTweakSetting(NSString *key, BOOL defaultValue) {
         NSString *path = getSharedPrefsFilePath();
         NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (!dict || [dict objectForKey:key] == nil) {
-            NSLog(@"[TelegramCallTweak] Reading setting %@: default %d", key, defaultValue);
             return defaultValue;
         }
-        BOOL val = [[dict objectForKey:key] boolValue];
-        NSLog(@"[TelegramCallTweak] Reading setting %@ from path %@: %d", key, path, val);
-        return val;
+        return [[dict objectForKey:key] boolValue];
     } @catch (NSException *exception) {
         return defaultValue;
     }
@@ -58,8 +51,7 @@ static void writeTweakSetting(NSString *key, BOOL value) {
             dict = [NSMutableDictionary dictionary];
         }
         [dict setObject:@(value) forKey:key];
-        BOOL success = [dict writeToFile:path atomically:YES];
-        NSLog(@"[TelegramCallTweak] Saved setting %@ to %d (Success: %d) at: %@", key, value, success, path);
+        [dict writeToFile:path atomically:YES];
     } @catch (NSException *exception) {
         NSLog(@"[TelegramCallTweak] Exception saving setting: %@", exception.reason);
     }
@@ -217,48 +209,23 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
 
 static TweakAudioObserver *gAudioObserver = nil;
 
-// --- OngoingCallVideoCapturer Frame Blocker Hook ---
+// --- OngoingCallThreadLocalContextVideoCapturer Frame Blocker Hook ---
 
-@interface OngoingCallVideoCapturerHook : NSObject
+@interface OngoingCallThreadLocalContextVideoCapturerHook : NSObject
 @end
 
-@implementation OngoingCallVideoCapturerHook
+@implementation OngoingCallThreadLocalContextVideoCapturerHook
 
-static void (*gOriginalInjectSampleBuffer)(id, SEL, CMSampleBufferRef, NSInteger, id) = NULL;
+static void (*gOriginalSubmitPixelBuffer)(id, SEL, CVPixelBufferRef, NSInteger) = NULL;
 
-- (void)swizzled_injectSampleBuffer:(CMSampleBufferRef)sampleBuffer rotation:(NSInteger)rotation completion:(id)completion {
+- (void)swizzled_submitPixelBuffer:(CVPixelBufferRef)pixelBuffer rotation:(NSInteger)rotation {
     if (getShareAudioOnlySetting()) {
-        NSLog(@"[TelegramCallTweak] Share Audio Only option is active. Dropping frame buffer inside OngoingCallVideoCapturer.");
-        if (completion) {
-            void (^completionBlock)(void) = completion;
-            completionBlock();
-        }
-        return; // Drops screen sharing and camera video frames
-    }
-    
-    if (gOriginalInjectSampleBuffer) {
-        gOriginalInjectSampleBuffer(self, @selector(injectSampleBuffer:rotation:completion:), sampleBuffer, rotation, completion);
-    }
-}
-@end
-
-// --- Swizzled Video/Camera Methods ---
-
-@interface VideoCameraCapturerHook : NSObject
-@end
-@implementation VideoCameraCapturerHook
-- (void)swizzled_captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    if (getShareAudioOnlySetting()) {
-        NSLog(@"[TelegramCallTweak] Share Audio Only option is active. Dropping frame buffer inside VideoCameraCapturer.");
+        // Drop the frame buffer entirely!
         return;
     }
     
-    typedef void (*OriginalMethodType)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *);
-    SEL selector = NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:");
-    Method originalMethod = class_getInstanceMethod([self class], selector);
-    if (originalMethod) {
-        OriginalMethodType imp = (OriginalMethodType)method_getImplementation(originalMethod);
-        imp(self, selector, captureOutput, sampleBuffer, connection);
+    if (gOriginalSubmitPixelBuffer) {
+        gOriginalSubmitPixelBuffer(self, @selector(submitPixelBuffer:rotation:), pixelBuffer, rotation);
     }
 }
 @end
@@ -334,25 +301,6 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     }
 }
 
-// --- Dynamic Class Resolver Helper ---
-static Class findOngoingCallVideoCapturerClass() {
-    int numClasses = objc_getClassList(NULL, 0);
-    if (numClasses > 0) {
-        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
-        numClasses = objc_getClassList(classes, numClasses);
-        for (int i = 0; i < numClasses; i++) {
-            const char *name = class_getName(classes[i]);
-            if (name && strstr(name, "OngoingCallVideoCapturer") != NULL) {
-                Class found = classes[i];
-                free(classes);
-                return found;
-            }
-        }
-        free(classes);
-    }
-    return nil;
-}
-
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
@@ -371,40 +319,22 @@ __attribute__((constructor)) static void initTweak() {
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category options successfully.");
     }
     
-    Class videoCameraCapturer = NSClassFromString(@"VideoCameraCapturer");
-    if (videoCameraCapturer) {
-        NSLog(@"[TelegramCallTweak] Hooking VideoCameraCapturer...");
-        SEL captureSelector = NSSelectorFromString(@"captureOutput:didOutputSampleBuffer:fromConnection:");
-        if (class_getInstanceMethod(videoCameraCapturer, captureSelector)) {
-            Method swizzledMethod = class_getInstanceMethod([VideoCameraCapturerHook class], @selector(swizzled_captureOutput:didOutputSampleBuffer:fromConnection:));
-            BOOL added = class_addMethod(videoCameraCapturer,
-                                         NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"),
-                                         method_getImplementation(swizzledMethod),
-                                         method_getTypeEncoding(swizzledMethod));
-            if (added) {
-                swizzle(videoCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
-            }
-        }
-    }
-    
-    // Hook OngoingCallVideoCapturer's injectSampleBuffer to block screen sharing video frames
-    Class ongoingCallVideoCapturerClass = findOngoingCallVideoCapturerClass();
-    if (ongoingCallVideoCapturerClass) {
-        NSLog(@"[TelegramCallTweak] Found OngoingCallVideoCapturer class: %s", class_getName(ongoingCallVideoCapturerClass));
-        SEL injectSelector = NSSelectorFromString(@"injectSampleBuffer:rotation:completion:");
-        Method originalMethod = class_getInstanceMethod(ongoingCallVideoCapturerClass, injectSelector);
+    // Hook the native WebRTC video capturer class (OngoingCallThreadLocalContextVideoCapturer)
+    Class videoCapturerClass = NSClassFromString(@"OngoingCallThreadLocalContextVideoCapturer");
+    if (videoCapturerClass) {
+        NSLog(@"[TelegramCallTweak] Hooking OngoingCallThreadLocalContextVideoCapturer...");
+        SEL submitSelector = NSSelectorFromString(@"submitPixelBuffer:rotation:");
+        Method originalMethod = class_getInstanceMethod(videoCapturerClass, submitSelector);
         if (originalMethod) {
-            gOriginalInjectSampleBuffer = (void (*)(id, SEL, CMSampleBufferRef, NSInteger, id))method_getImplementation(originalMethod);
+            gOriginalSubmitPixelBuffer = (void (*)(id, SEL, CVPixelBufferRef, NSInteger))method_getImplementation(originalMethod);
             
-            Method swizzledMethod = class_getInstanceMethod([OngoingCallVideoCapturerHook class], @selector(swizzled_injectSampleBuffer:rotation:completion:));
-            class_replaceMethod(ongoingCallVideoCapturerClass,
-                                injectSelector,
+            Method swizzledMethod = class_getInstanceMethod([OngoingCallThreadLocalContextVideoCapturerHook class], @selector(swizzled_submitPixelBuffer:rotation:));
+            class_replaceMethod(videoCapturerClass,
+                                submitSelector,
                                 method_getImplementation(swizzledMethod),
                                 method_getTypeEncoding(swizzledMethod));
-            NSLog(@"[TelegramCallTweak] Hooked OngoingCallVideoCapturer injectSampleBuffer successfully.");
+            NSLog(@"[TelegramCallTweak] Hooked submitPixelBuffer successfully.");
         }
-    } else {
-        NSLog(@"[TelegramCallTweak] Warning: OngoingCallVideoCapturer class was not found in Objective-C runtime.");
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
