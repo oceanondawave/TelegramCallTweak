@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <ReplayKit/ReplayKit.h>
 #import <objc/runtime.h>
 
 // --- Helper storage for custom settings locally inside standard UserDefaults ---
@@ -107,7 +108,7 @@ static void enforceBuiltInMicInput(AVAudioSession *session) {
     
     if (builtInMic) {
         BOOL isAlreadyMic = NO;
-        for (AVAudioSessionPortDescription *input in session.currentRoute.inputs) {
+        for (AVAudioSessionPortDescription *input in currentRoute.inputs) {
             if ([input.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
                 isAlreadyMic = YES;
                 break;
@@ -188,6 +189,93 @@ static TweakAudioObserver *gAudioObserver = nil;
 }
 @end
 
+// --- PrivateCallScreen Video Action Menu Injector ---
+
+@interface PrivateCallScreenHook : NSObject
+@end
+
+@implementation PrivateCallScreenHook
+
+static void (*gOriginalSetVideoAction)(id, SEL, id) = NULL;
+
+- (void)swizzled_setVideoAction:(id)action {
+    __weak id weakSelf = self;
+    id customVideoActionBlock = ^() {
+        id strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        
+        // Travel up view responder hierarchy to find CallController
+        UIViewController *callVC = nil;
+        UIResponder *responder = (UIResponder *)strongSelf;
+        while (responder) {
+            if ([responder isKindOfClass:[UIViewController class]]) {
+                NSString *className = [NSString stringWithUTF8String:class_getName([responder class])];
+                if ([className rangeOfString:@"CallController"].location != NSNotFound) {
+                    callVC = (UIViewController *)responder;
+                    break;
+                }
+            }
+            responder = [responder nextResponder];
+        }
+        
+        if (!callVC) {
+            if (action) {
+                void (^originalBlock)(void) = action;
+                originalBlock();
+            }
+            return;
+        }
+        
+        id call = [callVC valueForKey:@"call"];
+        BOOL hasScreencast = [[call valueForKey:@"hasScreencast"] boolValue];
+        
+        if (hasScreencast) {
+            [call performSelector:@selector(disableScreencast)];
+        } else {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Video Source"
+                                                                           message:nil
+                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
+            
+            [alert addAction:[UIAlertAction actionWithTitle:@"Use Camera" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
+                if (action) {
+                    void (^originalBlock)(void) = action;
+                    originalBlock();
+                }
+            }]];
+            
+            [alert addAction:[UIAlertAction actionWithTitle:@"Share Screen & Audio" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
+                if (@available(iOS 12.0, *)) {
+                    RPSystemBroadcastPickerView *picker = [[RPSystemBroadcastPickerView alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
+                    picker.showsMicrophoneButton = NO;
+                    
+                    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+                    picker.preferredExtension = [NSString stringWithFormat:@"%@.BroadcastUpload", bundleId];
+                    
+                    // Trigger picker overlay dynamically
+                    for (UIView *subview in picker.subviews) {
+                        if ([subview isKindOfClass:[UIButton class]]) {
+                            UIButton *button = (UIButton *)subview;
+                            [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+                            break;
+                        }
+                    }
+                }
+            }]];
+            
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            
+            [callVC presentViewController:alert animated:YES completion:nil];
+        }
+    };
+    
+    if (gOriginalSetVideoAction) {
+        gOriginalSetVideoAction(self, @selector(setVideoAction:), customVideoActionBlock);
+    }
+}
+@end
+
 // Window launch configuration alerts
 @interface UIWindow (TweakHook)
 @end
@@ -253,6 +341,25 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     }
 }
 
+// --- Dynamic Class Resolver Helper ---
+static Class findPrivateCallScreenClass() {
+    int numClasses = objc_getClassList(NULL, 0);
+    if (numClasses > 0) {
+        Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+        numClasses = objc_getClassList(classes, numClasses);
+        for (int i = 0; i < numClasses; i++) {
+            const char *name = class_getName(classes[i]);
+            if (name && strstr(name, "PrivateCallScreen") != NULL) {
+                Class found = classes[i];
+                free(classes);
+                return found;
+            }
+        }
+        free(classes);
+    }
+    return nil;
+}
+
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
@@ -265,11 +372,10 @@ __attribute__((constructor)) static void initTweak() {
     }
     
     // We only hook categoryOptions getter to keep Telegram's checks happy. 
-    // We do NOT swizzle setCategory/setMode methods, completely eliminating stack overflow recursion crashes.
     Class avAudioSessionClass = NSClassFromString(@"AVAudioSession");
     if (avAudioSessionClass) {
         swizzle(avAudioSessionClass, @selector(categoryOptions), @selector(swizzled_categoryOptions));
-        NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category and mode switches successfully.");
+        NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category options successfully.");
     }
     
     Class videoCameraCapturer = NSClassFromString(@"VideoCameraCapturer");
@@ -286,6 +392,26 @@ __attribute__((constructor)) static void initTweak() {
                 swizzle(videoCameraCapturer, captureSelector, NSSelectorFromString(@"swizzled_captureOutput:didOutputSampleBuffer:fromConnection:"));
             }
         }
+    }
+    
+    // Dynamically resolve Swift mangled class for PrivateCallScreen and swizzle setVideoAction:
+    Class privateCallScreenClass = findPrivateCallScreenClass();
+    if (privateCallScreenClass) {
+        NSLog(@"[TelegramCallTweak] Found PrivateCallScreen class: %s", class_getName(privateCallScreenClass));
+        SEL setVideoActionSelector = NSSelectorFromString(@"setVideoAction:");
+        Method originalMethod = class_getInstanceMethod(privateCallScreenClass, setVideoActionSelector);
+        if (originalMethod) {
+            gOriginalSetVideoAction = (void (*)(id, SEL, id))method_getImplementation(originalMethod);
+            
+            Method swizzledMethod = class_getInstanceMethod([PrivateCallScreenHook class], @selector(swizzled_setVideoAction:));
+            class_replaceMethod(privateCallScreenClass,
+                                setVideoActionSelector,
+                                method_getImplementation(swizzledMethod),
+                                method_getTypeEncoding(swizzledMethod));
+            NSLog(@"[TelegramCallTweak] Hooked PrivateCallScreen setVideoAction successfully.");
+        }
+    } else {
+        NSLog(@"[TelegramCallTweak] Warning: PrivateCallScreen class was not found in Objective-C runtime.");
     }
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");

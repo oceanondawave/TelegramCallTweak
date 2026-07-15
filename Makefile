@@ -7,5 +7,6 @@ TWEAK_NAME = TelegramCallTweak
 
 TelegramCallTweak_FILES = Tweak.x
 TelegramCallTweak_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+TelegramCallTweak_FRAMEWORKS = UIKit AVFoundation ReplayKit
 
 include $(THEOS)/makefiles/tweak.mk
