@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <mach-o/dyld.h>
 #import <objc/runtime.h>
 
 // --- File-Based Shared Preferences Manager ---
@@ -220,8 +221,7 @@ static void (*gOriginalSubmitPixelBuffer)(id, SEL, CVPixelBufferRef, NSInteger) 
 
 - (void)swizzled_submitPixelBuffer:(CVPixelBufferRef)pixelBuffer rotation:(NSInteger)rotation {
     if (getShareAudioOnlySetting()) {
-        // Drop the frame buffer entirely!
-        return;
+        return; // Drops screen sharing and camera video frames at the WebRTC engine layer
     }
     
     if (gOriginalSubmitPixelBuffer) {
@@ -301,6 +301,32 @@ static void swizzle(Class class, SEL originalSelector, SEL swizzledSelector) {
     }
 }
 
+// --- Dynamic Dyld Image Loader Hook ---
+static BOOL gOngoingCallVideoCapturerSwizzled = NO;
+
+static void image_added(const struct mach_header *mh, intptr_t vmaddr_slide) {
+    if (gOngoingCallVideoCapturerSwizzled) {
+        return;
+    }
+    
+    Class videoCapturerClass = NSClassFromString(@"OngoingCallThreadLocalContextVideoCapturer");
+    if (videoCapturerClass) {
+        SEL submitSelector = NSSelectorFromString(@"submitPixelBuffer:rotation:");
+        Method originalMethod = class_getInstanceMethod(videoCapturerClass, submitSelector);
+        if (originalMethod) {
+            gOriginalSubmitPixelBuffer = (void (*)(id, SEL, CVPixelBufferRef, NSInteger))method_getImplementation(originalMethod);
+            
+            Method swizzledMethod = class_getInstanceMethod([OngoingCallThreadLocalContextVideoCapturerHook class], @selector(swizzled_submitPixelBuffer:rotation:));
+            class_replaceMethod(videoCapturerClass,
+                                submitSelector,
+                                method_getImplementation(swizzledMethod),
+                                method_getTypeEncoding(swizzledMethod));
+            gOngoingCallVideoCapturerSwizzled = YES;
+            NSLog(@"[TelegramCallTweak] Dynamic Image Load: Hooked OngoingCallThreadLocalContextVideoCapturer successfully!");
+        }
+    }
+}
+
 // --- Tweak Entry Point ---
 __attribute__((constructor)) static void initTweak() {
     NSLog(@"[TelegramCallTweak] Dynamic swizzler initializing...");
@@ -319,23 +345,8 @@ __attribute__((constructor)) static void initTweak() {
         NSLog(@"[TelegramCallTweak] Hooked AVAudioSession category options successfully.");
     }
     
-    // Hook the native WebRTC video capturer class (OngoingCallThreadLocalContextVideoCapturer)
-    Class videoCapturerClass = NSClassFromString(@"OngoingCallThreadLocalContextVideoCapturer");
-    if (videoCapturerClass) {
-        NSLog(@"[TelegramCallTweak] Hooking OngoingCallThreadLocalContextVideoCapturer...");
-        SEL submitSelector = NSSelectorFromString(@"submitPixelBuffer:rotation:");
-        Method originalMethod = class_getInstanceMethod(videoCapturerClass, submitSelector);
-        if (originalMethod) {
-            gOriginalSubmitPixelBuffer = (void (*)(id, SEL, CVPixelBufferRef, NSInteger))method_getImplementation(originalMethod);
-            
-            Method swizzledMethod = class_getInstanceMethod([OngoingCallThreadLocalContextVideoCapturerHook class], @selector(swizzled_submitPixelBuffer:rotation:));
-            class_replaceMethod(videoCapturerClass,
-                                submitSelector,
-                                method_getImplementation(swizzledMethod),
-                                method_getTypeEncoding(swizzledMethod));
-            NSLog(@"[TelegramCallTweak] Hooked submitPixelBuffer successfully.");
-        }
-    }
+    // Register dyld image callback to dynamically swizzle OngoingCallThreadLocalContextVideoCapturer when its framework is loaded
+    _dyld_register_func_for_add_image(image_added);
     
     NSLog(@"[TelegramCallTweak] Dynamic swizzler completed setup!");
 }
